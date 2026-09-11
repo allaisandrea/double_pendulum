@@ -10,7 +10,7 @@
 //                 sides on, so the motor is shorted and stops quickly)
 //   l <0..255>    cap on |duty|, applied to this and later commands
 //   t 1 | t 0     stream status at 10 Hz
-//   f 1 | f 2 | f 3  PWM frequency: ~3.9 kHz (default), ~490 Hz, ~20 kHz
+//   f <100..25000>  PWM frequency in Hz; 10000 at startup
 //   ?             one status line
 // Every command answers with a line beginning "ok" or "err".
 
@@ -43,8 +43,8 @@ unsigned long last_status_ms = 0;
 unsigned long reverse_until_ms = 0;
 bool watchdog_tripped = false;
 
-uint8_t pwm_opt = 1;
-uint16_t pwm_top = 256;  // Timer1 counts to this; sets frequency and resolution
+uint16_t pwm_hz = 10000;  // as requested; the achieved rate is within a few Hz
+uint16_t pwm_top = 800;   // Timer1 counts to this: sets frequency and resolution
 
 void set_pins(int duty) {
   // Only ever one side driven; the other is held at zero. Duty arrives as
@@ -55,32 +55,35 @@ void set_pins(int duty) {
 
 // Timer1 runs in phase-correct PWM with ICR1 as the top value, so both the
 // frequency and the resolution are ours: f = 16 MHz / (2 * prescaler * top).
-//   1  ~3.9 kHz  default; an audible whine, but easy on the driver
-//   2   ~490 Hz  coarse chopping, so more current ripple. A bigger ripple can
-//                break a load free that a smooth current only hums against,
-//                at the cost of a loud buzz right where the ear is sharpest
-//   3   ~20 kHz  above hearing and inside the BTS7960's 25 kHz ceiling, but
-//                its switching delays are microseconds long, so the short
-//                pulses of a low duty never fully turn it on: duty 30 moved
-//                nothing at all here. Only useful at high duty
+//
+// The choice is a compromise. Low frequencies chop coarsely, which means more
+// current ripple: that can break a stubborn load free, but 490 Hz buzzes right
+// where the ear is sharpest. High frequencies are quieter and smoother, until
+// the pulses get shorter than the BTS7960's switching delays of a few
+// microseconds, at which point its output never fully turns on - 20 kHz at
+// duty 30 is a ~6 us pulse, and moved nothing at all here.
+//
 // Timer0 is untouched, so millis() and delay() still work. analogWrite() must
 // not be used on pins 9 and 10 once this runs: it assumes an 8-bit top.
-void set_pwm_option(uint8_t opt) {
-  uint8_t prescale;
-  switch (opt) {
-    case 2:  prescale = 0b011; pwm_top = 255; break;  // /64
-    case 3:  prescale = 0b001; pwm_top = 400; break;  // /1
-    default: opt = 1; prescale = 0b010; pwm_top = 256; break;  // /8
+void set_pwm_frequency(uint16_t hz) {
+  // Prefer the smallest prescaler whose top still fits in 16 bits: a bigger
+  // top is finer duty resolution.
+  uint8_t prescale = 0b001;          // /1
+  uint32_t top = 8000000UL / hz;
+  if (top > 65535) {
+    prescale = 0b010;                // /8
+    top /= 8;
   }
+  if (top > 65535) {
+    prescale = 0b011;                // /64
+    top /= 8;
+  }
+  pwm_top = top;
+  pwm_hz = hz;
   TCCR1A = _BV(COM1A1) | _BV(COM1B1) | _BV(WGM11);  // non-inverting, mode 10
   TCCR1B = _BV(WGM13) | prescale;
   ICR1 = pwm_top;
-  pwm_opt = opt;
   set_pins(applied);  // rescale whatever is currently driven to the new top
-}
-
-const char *pwm_name() {
-  return pwm_opt == 2 ? "490Hz" : pwm_opt == 3 ? "20kHz" : "3.9kHz";
 }
 
 void set_enabled(bool on) {
@@ -106,7 +109,8 @@ void status(const char *tag) {
   Serial.print(" limit=");
   Serial.print(limit);
   Serial.print(" pwm=");
-  Serial.print(pwm_name());
+  Serial.print(pwm_hz);
+  Serial.print("Hz");
   Serial.print(" ms=");
   Serial.println(millis());
 }
@@ -152,11 +156,11 @@ void handle(char *line) {
       status("ok");
       break;
     case 'f':
-      if (arg < 1 || arg > 3) {
-        Serial.println("err pwm option must be 1, 2 or 3");
+      if (arg < 100 || arg > 25000) {
+        Serial.println("err frequency must be 100..25000 Hz");
         break;
       }
-      set_pwm_option(arg);
+      set_pwm_frequency(arg);
       status("ok");
       break;
     case '?':
@@ -179,7 +183,11 @@ void setup() {
   pinMode(PIN_RPWM, OUTPUT);
   pinMode(PIN_LPWM, OUTPUT);
 
-  set_pwm_option(1);
+  // 10 kHz: quieter than 3.9 kHz and still long enough a pulse for the driver
+  // to switch properly at the duties this rig uses. Watch the low end though -
+  // the smaller the duty, the shorter the pulse, and below a few microseconds
+  // the BTS7960 stops responding at all.
+  set_pwm_frequency(10000);
 
   Serial.begin(115200);
   last_command_ms = millis();

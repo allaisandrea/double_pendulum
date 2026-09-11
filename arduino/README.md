@@ -53,7 +53,7 @@ board's millisecond clock.
 | `s` | duty 0, bridge still enabled (shorts the motor, so it stops quickly) |
 | `l <0..255>` | cap on \|duty\| |
 | `t 1` / `t 0` | stream status at 10 Hz |
-| `f 1` / `f 2` / `f 3` | PWM frequency: ~3.9 kHz (default), ~490 Hz, ~20 kHz (see below) |
+| `f <100..25000>` | PWM frequency in Hz; 10000 at startup (see below) |
 | `?` | one status line; also serves as a heartbeat |
 
 ## Rules a host program must follow
@@ -73,12 +73,11 @@ board's millisecond clock.
 - A direction change passes through zero and pauses 5 ms there.
 - Enables come up low and the PWM pins are written low before they become
   outputs, so a reset cannot leave a level on the driver's inputs.
-- PWM comes from Timer1 in phase-correct mode with `ICR1` as the top value,
-  so `f` can pick the frequency: ~3.9 kHz by default, ~490 Hz for a coarser
-  chop with more current ripple, or ~20 kHz to get above hearing while staying
-  under the BTS7960's 25 kHz ceiling. Timer0 is untouched, so `millis()` and
-  `delay()` still work. Do not call `analogWrite()` on pins 9 or 10: it
-  assumes an 8-bit top and would fight this configuration.
+- PWM comes from Timer1 in phase-correct mode with `ICR1` as the top value, so
+  `f` can pick any frequency from 100 Hz to 25 kHz, the driver's ceiling. It
+  starts at 10 kHz. Timer0 is untouched, so `millis()` and `delay()` still
+  work. Do not call `analogWrite()` on pins 9 or 10: it assumes an 8-bit top
+  and would fight this configuration.
 
 ## Known hardware fault, 2026-09-11
 
@@ -100,47 +99,75 @@ free of shorts. `L_EN` is proven good too, because forward current returns
 through that chip's low side — the motor could not turn forward at all if
 that chip were disabled.
 
-That leaves the LPWM connection at the module end, or the left chip's high
-side. Reseat the LPWM wire at the module first; if it is definitely on the
-right pin and still dead, the module has a failed half and needs replacing.
-Keep the same pin-out and nothing here changes.
+Reseating the LPWM wire at the module changed nothing. One more clue: the
+motor whines audibly whenever current flows, and reverse is **silent**. A
+stalled motor is louder than a turning one, not quieter, so no current reaches
+the motor in reverse at all.
 
-Reseating the LPWM wire at the module changed nothing: with the wires back in
-their documented positions, a gentle run turned the shaft counter-clockwise
-as before and reverse stayed dead. A further clue settles it — the motor
-whines audibly whenever current flows, and reverse is **silent**. A stalled
-motor is louder than a turning one, not quieter, so no current reaches the
-motor in reverse at all. The module's left half has failed and wants
-replacing; keep the same pin-out and nothing here changes.
+Two explanations survive, and on a new module the cheaper one is likelier:
+
+1. **The LPWM wire is one pin off on the module's header.** The header usually
+   runs `RPWM · LPWM · R_EN · L_EN · R_IS · L_IS · VCC · GND`. If that wire
+   sits on `R_IS` or `L_IS` — current-sense outputs, each tied to ground
+   through a resistor — every observation above follows from a *healthy*
+   module: `probe` sees the sense resistor pulling the line low and the
+   Arduino easily driving it high, the real LPWM input floats low on its
+   internal pull-down, forward needs exactly that low to return its current,
+   and reverse is never driven at all. **Check this first**, counting pin
+   positions against the silkscreen rather than trusting wire colours.
+2. **The left chip's high side is damaged.** Possible, but a half-dead module
+   straight out of the packet is only a few percent likely.
+
+Keep the same pin-out either way and nothing here changes.
 
 ## Load behaviour, 2026-09-11
 
-At duty 30 the arm starts moving and then stalls partway, humming. Duty 60
-moves it briskly, and felt violent on the rig. So the usable duty for this
-load sits between the two, and the figure is worth measuring properly once the
-driver is replaced and both directions work.
+At duty 30 the arm starts moving, then stops partway while still humming, and
+afterwards falls back to rest on its own — so it is not jammed against
+anything. Duty 60 moves it briskly, and felt violent on the rig.
 
-The hum is not a fault and not an alarm: the windings vibrate at the PWM
-switching frequency, 3.9 kHz, which the ear hears easily. A stall makes the
-same sound while the shaft stays put, and heats the motor and the bridge,
-so do not hold one.
+**Why it stops is unresolved.** A simple torque limit does not fit: a motor
+short of torque creeps rather than stopping dead, and the arm swings back
+freely. Candidates worth testing, in order:
 
-### PWM frequency, measured
+- the supply sagging under load — the BTS7960 cuts out below about 5 V
+- the surviving driver half tripping its own current or thermal protection
+- a dead spot in the motor: an open winding or a burnt commutator segment
+  would stop the rotor at one particular angle
 
-- **~3.9 kHz (`f 1`, default):** works. Audible whine, and the arm moves at
-  duty 30.
-- **~490 Hz (`f 2`):** works, and is very loud — a coarse buzz where the ear
-  is sharpest. Its bigger current ripple is the best bet for breaking a
-  stubborn load free, if you can stand the noise.
-- **~20 kHz (`f 3`):** inaudible, but **moved nothing at duty 30**. The
-  BTS7960's switching delays are several microseconds, and duty 30 at 20 kHz
-  is a pulse of roughly 6 µs, so the output never fully turns on. Expect it to
-  need a much higher duty before it does anything, and test it before relying
-  on it.
+To separate them, watch the supply's voltage and current during a run, and
+note whether the arm stops at the same angle every time. The same angle points
+at the motor; a different angle each run points at the supply or the driver.
 
-Confirmed by flashing the committed pre-frequency sketch, which moved the arm
-at duty 30, then the rewritten one at the same frequency and duty, which moved
-it identically. The frequency is what mattered, not the rewrite.
+The hum itself is not a fault and not an alarm: the windings vibrate at the
+PWM switching frequency, so its pitch follows `f`. A stall makes the same
+sound while the shaft stays put, and heats the motor and the bridge, so do
+not hold one.
+
+### PWM frequency, measured at duty 30
+
+| frequency | pulse width | result |
+| --- | --- | --- |
+| 490 Hz | ~240 µs | moves; painfully loud, a coarse buzz where the ear is sharpest |
+| 3.9 kHz | ~30 µs | moves; a clear whine |
+| **10 kHz** | ~12 µs | **moves; higher pitched and noticeably quieter — the default** |
+| 20 kHz | ~6 µs | **nothing happens at all** |
+
+The pattern is the BTS7960's switching delays, which are a few microseconds.
+Once the pulse approaches them the output never fully turns on, which is why
+20 kHz does nothing. Lower frequencies chop more coarsely, so the current
+ripple is larger — that is what makes 490 Hz the best bet for breaking a
+stubborn load free, and also what makes it so loud.
+
+**The trade-off to watch:** pulse width is duty × period, so a *small* duty at
+10 kHz is a short pulse too. Duty 15 at 10 kHz is already down at ~6 µs, where
+20 kHz failed. Expect a dead zone near zero duty, and if a control loop needs
+fine authority around zero, drop the frequency rather than fight it.
+
+When 20 kHz first failed it looked as though a Timer1 rewrite had broken
+something. Flashing the committed pre-rewrite sketch moved the arm, and the
+rewritten one at the same frequency and duty moved it identically — the
+frequency was the cause, not the rewrite.
 
 With only one working direction, the arm cannot be driven back electrically
 after a stall — reposition it by hand before the next run.
