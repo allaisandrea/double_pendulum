@@ -15,3 +15,7 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 [profile.dev]
 # The detector and JPEG encoder are unusably slow unoptimized.
 opt-level = 2
+
+[patch.crates-io]
+# Makes external USB cameras visible on macOS 13; see the PATCHED.md there.
+nokhwa-bindings-macos = { path = "vendor/nokhwa-bindings-macos" }

@@ -23,7 +23,7 @@ use detect::{Intrinsics, Pixels, Tag, Tracker};
 use image::RgbImage;
 use mov::MovWriter;
 use nokhwa::pixel_format::RgbFormat;
-use nokhwa::utils::{CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType};
+use nokhwa::utils::{ApiBackend, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType};
 use nokhwa::{Buffer, Camera};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -77,9 +77,10 @@ struct Args {
     #[arg(long, requires = "cx")]
     cy: Option<f64>,
 
-    /// Camera index
-    #[arg(long, default_value_t = 0)]
-    camera: u32,
+    /// Camera to record from: an index, or part of its name (e.g. SK-C201).
+    /// The cameras on offer are listed at startup
+    #[arg(long, default_value = "0")]
+    camera: String,
 
     /// Detector threads
     #[arg(long, default_value_t = 4)]
@@ -171,16 +172,17 @@ fn main() -> Result<()> {
     let (enc_tx, enc_rx) = mpsc::sync_channel(2);
     let (ready_tx, ready_rx) = mpsc::channel();
 
+    let camera = pick_camera(&args.camera)?;
     let capture = {
-        let (stop, dropped, index) = (stop.clone(), dropped.clone(), args.camera);
+        let (stop, dropped, id) = (stop.clone(), dropped.clone(), camera.id.clone());
         thread::Builder::new()
             .name("capture".into())
-            .spawn(move || capture_loop(index, &stop, cap_tx, &dropped, ready_tx))?
+            .spawn(move || capture_loop(&id, &stop, cap_tx, &dropped, ready_tx))?
     };
     let format = ready_rx
         .recv()
         .map_err(|_| anyhow!("capture thread exited"))??;
-    eprintln!("camera {}: {format}", args.camera);
+    eprintln!("camera {} ({}): {format}", camera.index, camera.name);
 
     let process = {
         let (args, stop, processed, csv) =
@@ -247,9 +249,48 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn open_camera(index: u32) -> Result<Camera> {
+/// A camera chosen with --camera.
+struct Picked {
+    index: u32,
+    name: String,
+    /// AVFoundation's unique id. macOS can list cameras in a different order
+    /// from one query to the next, so the camera is opened by id, not index.
+    id: String,
+}
+
+/// Resolves --camera, an index or a case-insensitive part of a camera's name,
+/// and lists the cameras on offer. Indices can change as cameras are plugged
+/// in, so a name is the safer choice.
+fn pick_camera(spec: &str) -> Result<Picked> {
+    let cameras: Vec<Picked> = nokhwa::query(ApiBackend::Auto)?
+        .iter()
+        .filter_map(|c| {
+            Some(Picked {
+                index: c.index().as_index().ok()?,
+                name: c.human_name(),
+                id: c.misc(),
+            })
+        })
+        .collect();
+    let list = cameras
+        .iter()
+        .map(|c| format!("[{}] {}", c.index, c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("cameras: {list}");
+    let wanted = spec.to_lowercase();
+    let found = match spec.parse::<u32>() {
+        Ok(i) => cameras.into_iter().find(|c| c.index == i),
+        Err(_) => cameras
+            .into_iter()
+            .find(|c| c.name.to_lowercase().contains(&wanted)),
+    };
+    found.ok_or_else(|| anyhow!("no camera matches {spec:?}; available: {list}"))
+}
+
+fn open_camera(id: &str) -> Result<Camera> {
     let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
-    let mut cam = Camera::new(CameraIndex::Index(index), format)?;
+    let mut cam = Camera::new(CameraIndex::String(id.to_string()), format)?;
     cam.open_stream()?;
     Ok(cam)
 }
@@ -257,13 +298,13 @@ fn open_camera(index: u32) -> Result<Camera> {
 /// Drains the camera continuously. nokhwa hands out the oldest queued frame
 /// and discards the rest, so reading slowly would mean reading stale frames.
 fn capture_loop(
-    index: u32,
+    id: &str,
     stop: &AtomicBool,
     tx: SyncSender<Captured>,
     dropped: &AtomicU64,
     ready: Sender<Result<String>>,
 ) -> Result<()> {
-    let mut cam = match open_camera(index) {
+    let mut cam = match open_camera(id) {
         Ok(cam) => {
             let f = cam.camera_format();
             let _ = ready.send(Ok(format!(
@@ -276,7 +317,7 @@ fn capture_loop(
             cam
         }
         Err(e) => {
-            let _ = ready.send(Err(e.context(format!("opening camera {index}"))));
+            let _ = ready.send(Err(e.context(format!("opening camera {id}"))));
             return Ok(());
         }
     };
