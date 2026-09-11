@@ -10,6 +10,7 @@
 //                 sides on, so the motor is shorted and stops quickly)
 //   l <0..255>    cap on |duty|, applied to this and later commands
 //   t 1 | t 0     stream status at 10 Hz
+//   f 1 | f 2 | f 3  PWM frequency: ~3.9 kHz (default), ~490 Hz, ~20 kHz
 //   ?             one status line
 // Every command answers with a line beginning "ok" or "err".
 
@@ -42,10 +43,44 @@ unsigned long last_status_ms = 0;
 unsigned long reverse_until_ms = 0;
 bool watchdog_tripped = false;
 
+uint8_t pwm_opt = 1;
+uint16_t pwm_top = 256;  // Timer1 counts to this; sets frequency and resolution
+
 void set_pins(int duty) {
-  // Only ever one side driven; the other is held at zero.
-  analogWrite(PIN_RPWM, duty > 0 ? duty : 0);
-  analogWrite(PIN_LPWM, duty < 0 ? -duty : 0);
+  // Only ever one side driven; the other is held at zero. Duty arrives as
+  // 0..255 on the wire and is scaled to whatever top the frequency uses.
+  OCR1A = duty > 0 ? ((uint32_t)duty * pwm_top) / 255 : 0;   // pin 9, RPWM
+  OCR1B = duty < 0 ? ((uint32_t)-duty * pwm_top) / 255 : 0;  // pin 10, LPWM
+}
+
+// Timer1 runs in phase-correct PWM with ICR1 as the top value, so both the
+// frequency and the resolution are ours: f = 16 MHz / (2 * prescaler * top).
+//   1  ~3.9 kHz  default; an audible whine, but easy on the driver
+//   2   ~490 Hz  coarse chopping, so more current ripple. A bigger ripple can
+//                break a load free that a smooth current only hums against,
+//                at the cost of a loud buzz right where the ear is sharpest
+//   3   ~20 kHz  above hearing and inside the BTS7960's 25 kHz ceiling, but
+//                its switching delays are microseconds long, so the short
+//                pulses of a low duty never fully turn it on: duty 30 moved
+//                nothing at all here. Only useful at high duty
+// Timer0 is untouched, so millis() and delay() still work. analogWrite() must
+// not be used on pins 9 and 10 once this runs: it assumes an 8-bit top.
+void set_pwm_option(uint8_t opt) {
+  uint8_t prescale;
+  switch (opt) {
+    case 2:  prescale = 0b011; pwm_top = 255; break;  // /64
+    case 3:  prescale = 0b001; pwm_top = 400; break;  // /1
+    default: opt = 1; prescale = 0b010; pwm_top = 256; break;  // /8
+  }
+  TCCR1A = _BV(COM1A1) | _BV(COM1B1) | _BV(WGM11);  // non-inverting, mode 10
+  TCCR1B = _BV(WGM13) | prescale;
+  ICR1 = pwm_top;
+  pwm_opt = opt;
+  set_pins(applied);  // rescale whatever is currently driven to the new top
+}
+
+const char *pwm_name() {
+  return pwm_opt == 2 ? "490Hz" : pwm_opt == 3 ? "20kHz" : "3.9kHz";
 }
 
 void set_enabled(bool on) {
@@ -70,6 +105,8 @@ void status(const char *tag) {
   Serial.print(target);
   Serial.print(" limit=");
   Serial.print(limit);
+  Serial.print(" pwm=");
+  Serial.print(pwm_name());
   Serial.print(" ms=");
   Serial.println(millis());
 }
@@ -114,6 +151,14 @@ void handle(char *line) {
       streaming = arg != 0;
       status("ok");
       break;
+    case 'f':
+      if (arg < 1 || arg > 3) {
+        Serial.println("err pwm option must be 1, 2 or 3");
+        break;
+      }
+      set_pwm_option(arg);
+      status("ok");
+      break;
     case '?':
       status("ok");
       break;
@@ -129,15 +174,12 @@ void setup() {
   digitalWrite(PIN_L_EN, LOW);
   pinMode(PIN_R_EN, OUTPUT);
   pinMode(PIN_L_EN, OUTPUT);
-  analogWrite(PIN_RPWM, 0);
-  analogWrite(PIN_LPWM, 0);
+  digitalWrite(PIN_RPWM, LOW);
+  digitalWrite(PIN_LPWM, LOW);
   pinMode(PIN_RPWM, OUTPUT);
   pinMode(PIN_LPWM, OUTPUT);
 
-  // Timer1 to a /8 prescale: ~3.9 kHz instead of the default 490 Hz. Above
-  // most of the audible whine, and well under the BTS7960's 25 kHz ceiling.
-  // Timer0 is untouched, so millis() and delay() still work.
-  TCCR1B = (TCCR1B & 0b11111000) | 0b010;
+  set_pwm_option(1);
 
   Serial.begin(115200);
   last_command_ms = millis();
