@@ -41,3 +41,23 @@ Verified on this Mac (macOS 13, SK-C201 webcam, 2026-09-10): settings take
 effect on the live stream within about half a second and survive the camera
 being opened, so set the exposure, then start the recorder. The built-in
 FaceTime camera is a PCIe device, not UVC, so none of this reaches it.
+
+### Setting exposure reliably
+
+Two traps, both found the hard way on the Arducam OV9281 (2026-09-18):
+
+- **A rejected write looks like a successful one.** While the camera is in
+  auto mode it ignores writes to `exposure-time-abs`, reports success, and
+  reads back the value it was given while still metering automatically.
+  Always set `auto-exposure-mode=1` first, and read every value back.
+- **Batching does not work.** Passing several `-s` flags in one invocation
+  dropped later writes silently. One control per invocation.
+
+The settings live in the camera, not the host, so a USB re-enumeration
+restores its defaults. That happened mid-session here — the kernel logged
+`terminateDevice ... connect change interrupt` and the camera came back
+metering automatically, so recordings made afterwards had no fixed exposure
+and nothing said so.
+
+`apriltag-cam --exposure-us` does all of this, including re-checking
+afterwards; prefer it over setting the controls by hand before a recording.

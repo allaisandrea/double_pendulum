@@ -15,6 +15,7 @@ mod mov;
 mod overlay;
 #[cfg(test)]
 mod synthetic;
+mod uvc;
 mod yuyv;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -81,6 +82,18 @@ struct Args {
     /// The cameras on offer are listed at startup
     #[arg(long, default_value = "0")]
     camera: String,
+
+    /// Fix the exposure time, in microseconds, before recording; 0 leaves
+    /// the camera metering automatically. Automatic metering hunts as the
+    /// arm swings and blurs it, so a fixed short exposure is the default.
+    /// Needs `tools/bin/uvc-util`
+    #[arg(long, default_value_t = 500)]
+    exposure_us: u32,
+
+    /// Sensor gain, 0..100. Gain amplifies noise along with the signal, but
+    /// at 500 us there is not enough light on the tags without it
+    #[arg(long, default_value_t = 100)]
+    gain: u16,
 
     /// Detector threads
     #[arg(long, default_value_t = 4)]
@@ -173,6 +186,28 @@ fn main() -> Result<()> {
     let (ready_tx, ready_rx) = mpsc::channel();
 
     let camera = pick_camera(&args.camera)?;
+
+    // Before the camera is opened, so the very first recorded frame already
+    // has the right exposure. A failure here stops the run: a recording made
+    // with the wrong exposure looks fine and is quietly useless.
+    let exposure = if args.exposure_us > 0 {
+        let dev = uvc::Device::find(&camera.id)
+            .context("finding the camera's UVC device to set its exposure")?;
+        let applied = dev
+            .set_exposure(args.exposure_us, Some(args.gain))
+            .context("setting a fixed exposure")?;
+        eprintln!(
+            "exposure: {} us fixed, gain {} ({})",
+            applied.exposure_us,
+            args.gain,
+            dev.name
+        );
+        Some((dev, applied))
+    } else {
+        eprintln!("exposure: left to the camera (--exposure-us 0)");
+        None
+    };
+
     let capture = {
         let (stop, dropped, id) = (stop.clone(), dropped.clone(), camera.id.clone());
         thread::Builder::new()
@@ -246,6 +281,14 @@ fn main() -> Result<()> {
     let frames = frames.context("writing video")?;
     let stats = stats.context("detection")?;
     summarize(&stats, frames, dropped.load(Ordering::Relaxed), &out, &csv);
+    // These controls live in the camera and a USB re-enumeration restores
+    // its defaults, so a long recording can silently revert to metering
+    // automatically part-way through. Say so rather than let it pass.
+    if let Some((dev, applied)) = &exposure {
+        if let Some(what) = dev.drift(applied) {
+            eprintln!("\nwarning: exposure did not hold during this recording: {what}");
+        }
+    }
     Ok(())
 }
 
