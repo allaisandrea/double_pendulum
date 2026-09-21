@@ -31,7 +31,13 @@ Search `src/lib.rs` for `PATCH (apriltag-cam)`:
   listing's original types plus `ExternalUnknown`;
 - `set_all` takes the format and frame-rate range together, from the first
   format of the requested size that supports the requested frame rate;
-- `#![allow(warnings)]`, since cargo only caps lints for registry crates.
+- `#![allow(warnings)]`, since cargo only caps lints for registry crates;
+- `capture_timestamp()` reports each frame's presentation timestamp as is,
+  in nanoseconds on the mach_absolute_time clock (`CLOCK_UPTIME_RAW`).
+  Upstream converted it to Unix wall-clock time by re-reading the wall clock
+  on every frame, which put frames on a clock NTP can adjust, and on a
+  different one from every other timestamp the RL collector records.
 
-Drop the patch once upstream asks for both external types, or once this
-machine runs macOS 14 or later.
+The device-type changes can go once upstream asks for both external types,
+or once this machine runs macOS 14 or later. The timestamp change has to stay
+for as long as the collector needs frames on the monotonic clock.

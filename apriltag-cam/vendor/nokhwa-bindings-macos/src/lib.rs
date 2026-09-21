@@ -459,30 +459,22 @@ mod internal {
 
                 unsafe { CVPixelBufferUnlockBaseAddress(image_buffer, 0) };
 
-                // CMSampleBufferGetPresentationTimeStamp returns the sensor
-                // capture instant on a monotonic clock (mach_absolute_time
-                // timebase).  Convert to Unix wallclock:
-                //   wall = SystemTime::now() - (mach_now - pts)
+                // PATCH (apriltag-cam): report the presentation timestamp as
+                // is, in nanoseconds on the mach_absolute_time clock (the
+                // same clock as CLOCK_UPTIME_RAW), instead of converting it
+                // to Unix wall-clock time. The conversion re-read the wall
+                // clock on every frame, so NTP adjustments and the gap
+                // between reading the two clocks leaked into the stamps.
                 let capture_ts = {
                     let pts = unsafe {
                         core_media::CMSampleBufferGetPresentationTimeStamp(
                             didOutputSampleBuffer,
                         )
                     };
-                    if pts.timescale > 0 {
-                        let pts_nanos = (pts.value as u128)
-                            .saturating_mul(1_000_000_000)
+                    if pts.timescale > 0 && pts.value >= 0 {
+                        let nanos = (pts.value as u128).saturating_mul(1_000_000_000)
                             / (pts.timescale as u128);
-                        let mono_now_nanos = mach_absolute_time_nanos() as u128;
-                        let wall_now = std::time::SystemTime::now();
-
-                        let age = Duration::from_nanos(
-                            mono_now_nanos.saturating_sub(pts_nanos) as u64,
-                        );
-                        wall_now
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .ok()
-                            .and_then(|wall_dur| wall_dur.checked_sub(age))
+                        Some(Duration::from_nanos(nanos as u64))
                     } else {
                         None
                     }
