@@ -1,58 +1,32 @@
 # Arduino motor control
 
-An Arduino Uno drives the pendulum's DC motor through a BTS7960 H-bridge,
-taking commands from this laptop over USB serial. Eventually the tag poses
-from `apriltag-cam` will feed a control loop that sends those commands.
+An Arduino Uno drives the pendulum's DC motor through a Cytron SHIELD-MDD10,
+taking a stream of duty commands from this laptop over USB serial. The
+sketch is `arduino.ino`; Arduino requires it to share its folder's name.
 
-## Sketches
+## The shield
 
-| sketch | purpose |
-| --- | --- |
-| `mdd10/` | **current driver**: Cytron SHIELD-MDD10, same serial protocol as `motor/` |
-| `motor/` | the BTS7960 version, kept for reference; that module is retired |
-| `hello/` | serial-only sanity check; touches no pins, so it cannot move the motor |
-| `probe/` | reports the state of the four control lines, to find wiring faults |
-
-## SHIELD-MDD10 (current, 2026-09-21)
-
-A shield: it plugs straight onto the Uno, so there is no signal wiring. Only
+A shield plugs straight onto the Uno, so there is no signal wiring. Only
 channel 1 is used, jumpered to **PWM1 = D9** and **DIR1 = D8**. Motor to
 M1A/M1B, the 12 V supply to VB+/VB-.
 
 - **No reverse-polarity protection** — the silkscreen says so, and the
   datasheet says a reversed supply destroys the board instantly. Check VB+
-  and VB- before the first power-up.
+  and VB- before powering up.
 - **The test buttons run the motor at full speed.** Duty 60 of 255 was
   already violent on this rig; do not press them with the arm attached.
 - **It cannot coast.** PWM low shorts the motor terminals (brake), and there
   is no enable pin to float them. Idle, the motor damps the pendulum.
 - **Its 5 V regulator feeds the Uno's 5V pin** by default, alongside USB.
   Cutting the 5V solder jumper on the underside separates them.
+- **Rated to 20 kHz PWM** at full current (40 kHz derated). High frequencies
+  are quiet where lower ones whine; `PWM_HZ` sets what the sketch uses.
+- **Two diagnostic LEDs:** ERR lights on undervoltage shutdown, OC when the
+  shield is limiting current.
+
 **Measured 2026-09-21, duty 30 at 20 kHz:** positive duty turns the shaft
-**counter-clockwise**, negative **clockwise** — the same convention as the
-BTS7960, so earlier notes keep their meaning. Both directions work, and both
-are very quiet: at 20 kHz the winding whine is gone, and the ~6 µs pulse at
-duty 30 is long enough for this driver, unlike the BTS7960.
-
-Protocol differences from `motor/`: `e 1` arms rather than enabling a
-bridge, since there is no enable pin, and `f` stops at 20000.
-
-- Rated to 20 kHz PWM at full current (40 kHz derated), which is where the
-  sketch starts. The ERR LED lights on undervoltage shutdown and OC on
-  current limiting — both worth watching for the unexplained stalls below.
-
-## Wiring (BTS7960, retired)
-
-| Uno pin | BTS7960 | notes |
-| --- | --- | --- |
-| 9 | RPWM | PWM, Timer1 |
-| 10 | LPWM | PWM, Timer1 |
-| 7 | R_EN | |
-| 8 | L_EN | |
-| GND | GND | required; without it the driver has no reference for the signals |
-
-**Sign convention, measured 2026-09-11:** positive duty drives RPWM and turns
-the shaft **counter-clockwise**.
+**counter-clockwise**, negative **clockwise**. Both directions work and both
+are very quiet.
 
 ## Building and uploading
 
@@ -62,141 +36,98 @@ Arduino's official prebuilt binary.
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-arduino-cli compile --fqbn arduino:avr:uno arduino/motor
-arduino-cli upload -p /dev/cu.usbmodem143101 --fqbn arduino:avr:uno arduino/motor
-arduino-cli monitor -p /dev/cu.usbmodem143101 -c baudrate=115200
+arduino-cli compile --fqbn arduino:avr:uno arduino
+arduino-cli upload -p /dev/cu.usbmodem143201 --fqbn arduino:avr:uno arduino
 ```
 
 The port name can change; `arduino-cli board list` shows it.
 
-## Serial protocol
+## Testing
 
-115200 baud, one command per line. Every command answers with a line starting
-`ok`, `err` or `watchdog`, carrying `en`, `duty`, `target`, `limit` and the
-board's millisecond clock.
+`drive.py` applies one duty for a while, then stops the motor. It finds the
+Uno by USB vendor id, waits for the ready line, resends the byte at 50 Hz to
+stay ahead of the watchdog, and streams zeros at the end; Ctrl-C stops it at
+once.
 
-| command | meaning |
-| --- | --- |
-| `e 1` / `e 0` | enable / disable both halves of the bridge |
-| `v <-255..255>` | signed duty, clamped to the current limit |
-| `s` | duty 0, bridge still enabled (shorts the motor, so it stops quickly) |
-| `l <0..255>` | cap on \|duty\| |
-| `t 1` / `t 0` | stream status at 10 Hz |
-| `f <100..25000>` | PWM frequency in Hz; 10000 at startup (see below) |
-| `?` | one status line; also serves as a heartbeat |
+```sh
+uv run arduino/drive.py 30 3      # +30 for 3 s: counter-clockwise
+uv run arduino/drive.py -30 3     # clockwise
+uv run arduino/drive.py 0 1       # moves nothing: checks the link
+```
 
-## Rules a host program must follow
+**Do not open a serial monitor on this sketch.** Every byte is a motor
+command, so typing moves the motor: `?` is byte 63, which is duty 63.
 
-- **Send something at least every 300 ms.** After that silence the sketch
-  stops the motor and disables the bridge. A crashed control loop, an
-  unplugged cable and a wedged laptop all look the same from the board, and
-  all of them should stop the motor. `?` is the cheapest heartbeat.
-- **Wait about two seconds after opening the port.** Opening it resets the
-  Uno, and the bootloader swallows input while it runs.
-- **`v` is refused unless enabled.** Send `e 1` first.
+## Protocol
+
+115200 baud. **Each byte the host sends is one command**: a signed 8-bit
+duty (`int8_t`), in units of 1/255 of full scale. The sketch clips it to
+±`LIMIT` and applies it at once. Positive turns the shaft counter-clockwise.
+
+- **No framing.** Every byte is a complete, valid command, so the two ends
+  cannot fall out of step.
+- **No ramp and no pause at reversal.** What is sent is what the motor gets.
+  The shield's current limiting absorbs the step.
+- **No replies**, with one exception: `ready mdd10` once at startup.
+- **Watchdog.** `WATCHDOG_MS` after the last byte, the duty goes to zero.
+  To keep the motor driven, resend at least that often, repeating the same
+  value if it has not changed.
+- **Frequency, cap and watchdog are constants** in the sketch, `PWM_HZ`,
+  `LIMIT` and `WATCHDOG_MS`, and `arduino.ino` is the one place their values
+  are set. Changing any of them means reflashing.
+
+The byte range reaches ±127, i.e. 50% duty, so `LIMIT` cannot exceed that.
+
+### Timing
+
+A byte is applied as soon as the serial interrupt receives it, and the new
+duty reaches the pin at the top of the next PWM period, at most 1/`PWM_HZ`
+later.
+The Uno's clock is not involved, so **an action takes effect at the host's
+write time plus the one-way transfer**: 87 µs for the byte on the wire, plus
+USB scheduling of up to about a millisecond. Timestamp writes on the host's
+monotonic clock and nothing else needs synchronising.
+
+That is why the protocol has no replies. An earlier text protocol answered
+every command with a 57-byte status line, which measured a round trip of
+5.9–10.5 ms (median 8.3) — mostly that reply — and the Uno's clock ran at
+−422 ppm against the laptop's, 25 ms per minute.
+
+### Rules for the host
+
+- **Wait for `ready mdd10` after opening the port.** Opening it resets the
+  Uno. Bytes sent during the ~1.5 s before that line go to the bootloader,
+  which may act on them.
+- **Only the controlling program may talk to this port.** Any byte moves the
+  motor, including text; there is no arm step to guard against it.
+- **Keep sending.** Silence longer than `WATCHDOG_MS` stops the motor, by
+  design: a crashed program, an unplugged cable and a wedged laptop all look
+  the same from the board.
 
 ## Safety behaviour in the sketch
 
-- Duty is capped at 40 of 255 by default; 60 was already violent on this rig.
-- Duty slews about one count per millisecond, so no step lands on the gearbox.
-- A direction change passes through zero and pauses 5 ms there.
-- Enables come up low and the PWM pins are written low before they become
-  outputs, so a reset cannot leave a level on the driver's inputs.
-- PWM comes from Timer1 in phase-correct mode with `ICR1` as the top value, so
-  `f` can pick any frequency from 100 Hz to 25 kHz, the driver's ceiling. It
-  starts at 10 kHz. Timer0 is untouched, so `millis()` and `delay()` still
-  work. Do not call `analogWrite()` on pins 9 or 10: it assumes an 8-bit top
-  and would fight this configuration.
+- Duty is capped at ±`LIMIT`. Duty 60 felt violent with the previous
+  driver, so approach the cap gradually.
+- The PWM, DIR and channel-2 inputs are written low before they become
+  outputs. The pins still float during the ~2 s reset whenever the port is
+  opened, and no sketch can prevent that; keep clear of the arm then.
+- PWM comes from Timer1 in phase-correct mode with `ICR1` as the top value:
+  f = 16 MHz / (2 × top), so top = 8 MHz / `PWM_HZ`. Timer0 is untouched, so
+  `millis()` still works. Do not call `analogWrite()` on pin 9.
 
-## Known hardware fault, 2026-09-11
+## Open questions
 
-**The driver's LPWM input does not work, so the motor turns one way only.**
-Tested by swapping the pin 9 and pin 10 wires at the Arduino header and
-repeating a gentle 30-duty run in each direction:
+- **Where is the dead zone?** Pulse width is (duty / 255) / `PWM_HZ`, so
+  small duties make short pulses. Duty 30 at 20 kHz, a ~6 µs pulse, worked in
+  the 2026-09-21 test, but below some duty the shield will not switch fully —
+  and below some other, the motor's static friction wins anyway. A slow sweep
+  up from 1 would find both.
+- **Does the arm still stall?** With the previous driver, duty 30 moved the
+  arm partway and then stopped it, humming, after which it fell back on its
+  own. Supply sag, driver protection and a dead spot in the motor were all
+  candidates, and none was ruled out. If it recurs, the ERR and OC LEDs
+  separate the first two; stopping at the same angle every time would point
+  at the motor.
 
-| test | signal path | result |
-| --- | --- | --- |
-| pin 9 → RPWM | original wiring | turns counter-clockwise |
-| pin 10 → LPWM | original wiring | nothing |
-| pin 9 → LPWM | wires swapped | nothing |
-| pin 10 → RPWM | wires swapped | turns counter-clockwise |
-
-The motor turns whenever a signal reaches RPWM and never when it reaches
-LPWM, whichever Uno pin sends it, so both outputs are good. `probe` found all
-four lines identical: pulled low through the driver's input pull-downs, and
-free of shorts. `L_EN` is proven good too, because forward current returns
-through that chip's low side — the motor could not turn forward at all if
-that chip were disabled.
-
-Reseating the LPWM wire at the module changed nothing. One more clue: the
-motor whines audibly whenever current flows, and reverse is **silent**. A
-stalled motor is louder than a turning one, not quieter, so no current reaches
-the motor in reverse at all.
-
-Two explanations survive, and on a new module the cheaper one is likelier:
-
-1. **The LPWM wire is one pin off on the module's header.** The header usually
-   runs `RPWM · LPWM · R_EN · L_EN · R_IS · L_IS · VCC · GND`. If that wire
-   sits on `R_IS` or `L_IS` — current-sense outputs, each tied to ground
-   through a resistor — every observation above follows from a *healthy*
-   module: `probe` sees the sense resistor pulling the line low and the
-   Arduino easily driving it high, the real LPWM input floats low on its
-   internal pull-down, forward needs exactly that low to return its current,
-   and reverse is never driven at all. **Check this first**, counting pin
-   positions against the silkscreen rather than trusting wire colours.
-2. **The left chip's high side is damaged.** Possible, but a half-dead module
-   straight out of the packet is only a few percent likely.
-
-Keep the same pin-out either way and nothing here changes.
-
-## Load behaviour, 2026-09-11
-
-At duty 30 the arm starts moving, then stops partway while still humming, and
-afterwards falls back to rest on its own — so it is not jammed against
-anything. Duty 60 moves it briskly, and felt violent on the rig.
-
-**Why it stops is unresolved.** A simple torque limit does not fit: a motor
-short of torque creeps rather than stopping dead, and the arm swings back
-freely. Candidates worth testing, in order:
-
-- the supply sagging under load — the BTS7960 cuts out below about 5 V
-- the surviving driver half tripping its own current or thermal protection
-- a dead spot in the motor: an open winding or a burnt commutator segment
-  would stop the rotor at one particular angle
-
-To separate them, watch the supply's voltage and current during a run, and
-note whether the arm stops at the same angle every time. The same angle points
-at the motor; a different angle each run points at the supply or the driver.
-
-The hum itself is not a fault and not an alarm: the windings vibrate at the
-PWM switching frequency, so its pitch follows `f`. A stall makes the same
-sound while the shaft stays put, and heats the motor and the bridge, so do
-not hold one.
-
-### PWM frequency, measured at duty 30
-
-| frequency | pulse width | result |
-| --- | --- | --- |
-| 490 Hz | ~240 µs | moves; painfully loud, a coarse buzz where the ear is sharpest |
-| 3.9 kHz | ~30 µs | moves; a clear whine |
-| **10 kHz** | ~12 µs | **moves; higher pitched and noticeably quieter — the default** |
-| 20 kHz | ~6 µs | **nothing happens at all** |
-
-The pattern is the BTS7960's switching delays, which are a few microseconds.
-Once the pulse approaches them the output never fully turns on, which is why
-20 kHz does nothing. Lower frequencies chop more coarsely, so the current
-ripple is larger — that is what makes 490 Hz the best bet for breaking a
-stubborn load free, and also what makes it so loud.
-
-**The trade-off to watch:** pulse width is duty × period, so a *small* duty at
-10 kHz is a short pulse too. Duty 15 at 10 kHz is already down at ~6 µs, where
-20 kHz failed. Expect a dead zone near zero duty, and if a control loop needs
-fine authority around zero, drop the frequency rather than fight it.
-
-When 20 kHz first failed it looked as though a Timer1 rewrite had broken
-something. Flashing the committed pre-rewrite sketch moved the arm, and the
-rewritten one at the same frequency and duty moved it identically — the
-frequency was the cause, not the rewrite.
-
-With only one working direction, the arm cannot be driven back electrically
-after a stall — reposition it by hand before the next run.
+The previous driver, a BTS7960, turned the motor one way only and whined at
+every frequency it could follow. It and its sketches are in git history.
