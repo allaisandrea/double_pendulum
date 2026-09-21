@@ -8,11 +8,40 @@ from `apriltag-cam` will feed a control loop that sends those commands.
 
 | sketch | purpose |
 | --- | --- |
-| `motor/` | the real thing: serial commands to duty cycle, with a watchdog |
+| `mdd10/` | **current driver**: Cytron SHIELD-MDD10, same serial protocol as `motor/` |
+| `motor/` | the BTS7960 version, kept for reference; that module is retired |
 | `hello/` | serial-only sanity check; touches no pins, so it cannot move the motor |
 | `probe/` | reports the state of the four control lines, to find wiring faults |
 
-## Wiring
+## SHIELD-MDD10 (current, 2026-09-21)
+
+A shield: it plugs straight onto the Uno, so there is no signal wiring. Only
+channel 1 is used, jumpered to **PWM1 = D9** and **DIR1 = D8**. Motor to
+M1A/M1B, the 12 V supply to VB+/VB-.
+
+- **No reverse-polarity protection** — the silkscreen says so, and the
+  datasheet says a reversed supply destroys the board instantly. Check VB+
+  and VB- before the first power-up.
+- **The test buttons run the motor at full speed.** Duty 60 of 255 was
+  already violent on this rig; do not press them with the arm attached.
+- **It cannot coast.** PWM low shorts the motor terminals (brake), and there
+  is no enable pin to float them. Idle, the motor damps the pendulum.
+- **Its 5 V regulator feeds the Uno's 5V pin** by default, alongside USB.
+  Cutting the 5V solder jumper on the underside separates them.
+**Measured 2026-09-21, duty 30 at 20 kHz:** positive duty turns the shaft
+**counter-clockwise**, negative **clockwise** — the same convention as the
+BTS7960, so earlier notes keep their meaning. Both directions work, and both
+are very quiet: at 20 kHz the winding whine is gone, and the ~6 µs pulse at
+duty 30 is long enough for this driver, unlike the BTS7960.
+
+Protocol differences from `motor/`: `e 1` arms rather than enabling a
+bridge, since there is no enable pin, and `f` stops at 20000.
+
+- Rated to 20 kHz PWM at full current (40 kHz derated), which is where the
+  sketch starts. The ERR LED lights on undervoltage shutdown and OC on
+  current limiting — both worth watching for the unexplained stalls below.
+
+## Wiring (BTS7960, retired)
 
 | Uno pin | BTS7960 | notes |
 | --- | --- | --- |
