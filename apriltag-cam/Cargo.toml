@@ -6,11 +6,18 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 apriltag = "0.4"
+arrow-array = "60.0.0"
+arrow-ipc = "60.0.0"
+arrow-schema = "60.0.0"
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = "3.5"
 image = { version = "0.25", default-features = false }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
+libc = "0.2"
+mach2 = "0.4"
 nokhwa = { version = "0.10", features = ["input-native"] }
+rand = "0.10.3"
+serialport = "4.10.1"
 
 [profile.dev]
 # The detector and JPEG encoder are unusably slow unoptimized.

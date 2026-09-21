@@ -9,29 +9,22 @@
 //! with are dropped at the first hand-off and counted; every detected frame
 //! is recorded, stamped with its capture time so playback runs in real time.
 
-mod detect;
-mod draw;
-mod mov;
-mod overlay;
-#[cfg(test)]
-mod synthetic;
-mod uvc;
-mod yuyv;
-
 use anyhow::{anyhow, bail, Context, Result};
+use apriltag_cam::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
+use apriltag_cam::detect::{Intrinsics, Pixels, Tag, Tracker};
+use apriltag_cam::mailbox::{Latest, Take};
+use apriltag_cam::mov::MovWriter;
+use apriltag_cam::{overlay, uvc, yuyv};
 use clap::Parser;
-use detect::{Intrinsics, Pixels, Tag, Tracker};
 use image::RgbImage;
-use mov::MovWriter;
 use nokhwa::pixel_format::RgbFormat;
-use nokhwa::utils::{ApiBackend, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType};
-use nokhwa::{Buffer, Camera};
+use nokhwa::Buffer;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -121,29 +114,12 @@ impl Args {
     }
 }
 
-/// A raw camera frame, untouched until the detector takes it, so frames
-/// dropped for being late cost nothing.
-struct Captured {
-    seq: u64,
-    pts: Duration,
-    buf: Buffer,
-}
-
 /// A frame with its detections, on its way to be drawn and recorded.
 struct Detected {
     pts: Duration,
     buf: Buffer,
     k: Intrinsics,
     tags: Vec<Tag>,
-}
-
-/// Whether the frame is packed YUYV at its nominal size. nokhwa labels some
-/// other macOS layouts (NV12) YUYV too; the size check keeps those off the
-/// fast paths.
-fn is_packed_yuyv(buf: &Buffer) -> bool {
-    let res = buf.resolution();
-    buf.source_frame_format() == FrameFormat::YUYV
-        && buf.buffer().len() == 2 * res.width() as usize * res.height() as usize
 }
 
 #[derive(Default)]
@@ -181,7 +157,7 @@ fn main() -> Result<()> {
     let dropped = Arc::new(AtomicU64::new(0));
     let processed = Arc::new(AtomicU64::new(0));
 
-    let (cap_tx, cap_rx) = mpsc::sync_channel(1);
+    let slot = Arc::new(Latest::new());
     let (enc_tx, enc_rx) = mpsc::sync_channel(2);
     let (ready_tx, ready_rx) = mpsc::channel();
 
@@ -209,14 +185,16 @@ fn main() -> Result<()> {
     };
 
     let capture = {
-        let (stop, dropped, id) = (stop.clone(), dropped.clone(), camera.id.clone());
+        let (stop, dropped, id, slot) =
+            (stop.clone(), dropped.clone(), camera.id.clone(), slot.clone());
         thread::Builder::new()
             .name("capture".into())
-            .spawn(move || capture_loop(&id, &stop, cap_tx, &dropped, ready_tx))?
+            .spawn(move || capture_loop(&id, &stop, &slot, &dropped, ready_tx))?
     };
     let format = ready_rx
         .recv()
         .map_err(|_| anyhow!("capture thread exited"))??;
+    let format = camera::describe(&format);
     eprintln!("camera {} ({}): {format}", camera.index, camera.name);
 
     let process = {
@@ -224,7 +202,7 @@ fn main() -> Result<()> {
             (args.clone(), stop.clone(), processed.clone(), csv.clone());
         thread::Builder::new()
             .name("detect".into())
-            .spawn(move || detect_loop(&args, cap_rx, enc_tx, &stop, &processed, &csv))?
+            .spawn(move || detect_loop(&args, &slot, enc_tx, &stop, &processed, &csv))?
     };
     let encode = {
         let (args, out) = (args.clone(), out.clone());
@@ -292,109 +270,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// A camera chosen with --camera.
-struct Picked {
-    index: u32,
-    name: String,
-    /// AVFoundation's unique id. macOS can list cameras in a different order
-    /// from one query to the next, so the camera is opened by id, not index.
-    id: String,
-}
-
-/// Resolves --camera, an index or a case-insensitive part of a camera's name,
-/// and lists the cameras on offer. Indices can change as cameras are plugged
-/// in, so a name is the safer choice.
-fn pick_camera(spec: &str) -> Result<Picked> {
-    let cameras: Vec<Picked> = nokhwa::query(ApiBackend::Auto)?
-        .iter()
-        .filter_map(|c| {
-            Some(Picked {
-                index: c.index().as_index().ok()?,
-                name: c.human_name(),
-                id: c.misc(),
-            })
-        })
-        .collect();
-    let list = cameras
-        .iter()
-        .map(|c| format!("[{}] {}", c.index, c.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    eprintln!("cameras: {list}");
-    let wanted = spec.to_lowercase();
-    let found = match spec.parse::<u32>() {
-        Ok(i) => cameras.into_iter().find(|c| c.index == i),
-        Err(_) => cameras
-            .into_iter()
-            .find(|c| c.name.to_lowercase().contains(&wanted)),
-    };
-    found.ok_or_else(|| anyhow!("no camera matches {spec:?}; available: {list}"))
-}
-
-fn open_camera(id: &str) -> Result<Camera> {
-    let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
-    let mut cam = Camera::new(CameraIndex::String(id.to_string()), format)?;
-    cam.open_stream()?;
-    Ok(cam)
-}
-
-/// Drains the camera continuously. nokhwa hands out the oldest queued frame
-/// and discards the rest, so reading slowly would mean reading stale frames.
-fn capture_loop(
-    id: &str,
-    stop: &AtomicBool,
-    tx: SyncSender<Captured>,
-    dropped: &AtomicU64,
-    ready: Sender<Result<String>>,
-) -> Result<()> {
-    let mut cam = match open_camera(id) {
-        Ok(cam) => {
-            let f = cam.camera_format();
-            let _ = ready.send(Ok(format!(
-                "{}x{} {:?} @ {} fps",
-                f.width(),
-                f.height(),
-                f.format(),
-                f.frame_rate()
-            )));
-            cam
-        }
-        Err(e) => {
-            let _ = ready.send(Err(e.context(format!("opening camera {id}"))));
-            return Ok(());
-        }
-    };
-
-    let mut t0 = None;
-    let mut seq = 0;
-    let result = (|| -> Result<()> {
-        while !stop.load(Ordering::Relaxed) {
-            let buf = cam.frame()?;
-            // The sensor's timestamp where the backend reports one.
-            let ts = buf.capture_timestamp().unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-            });
-            let pts = ts.saturating_sub(*t0.get_or_insert(ts));
-            match tx.try_send(Captured { seq, pts, buf }) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
-                    dropped.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(TrySendError::Disconnected(_)) => break,
-            }
-            seq += 1;
-        }
-        Ok(())
-    })();
-    let _ = cam.stop_stream();
-    result
-}
-
 fn detect_loop(
     args: &Args,
-    rx: Receiver<Captured>,
+    slot: &Latest<Captured>,
     tx: SyncSender<Detected>,
     stop: &AtomicBool,
     processed: &AtomicU64,
@@ -410,14 +288,19 @@ fn detect_loop(
 
     let mut tracker: Option<(Tracker, Intrinsics)> = None;
     let mut stats = Stats::default();
+    let mut t_first: Option<Duration> = None;
 
     // Polls rather than blocks so Ctrl-C lands even if the camera stalls.
     while !stop.load(Ordering::Relaxed) {
-        let cap = match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(cap) => cap,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+        let cap = match slot.take(Duration::from_millis(100)) {
+            Take::Item(cap) => cap,
+            Take::Timeout => continue,
+            Take::Closed => break,
         };
+        // Playback time: the sensor's timestamp where the backend reports
+        // one, else arrival, measured from the first frame.
+        let t = cap.t_capture.unwrap_or(cap.t_arrival);
+        let pts = t.saturating_sub(*t_first.get_or_insert(t));
         let res = cap.buf.resolution();
         let (w, h) = (res.width(), res.height());
         if tracker.is_none() {
@@ -438,7 +321,7 @@ fn detect_loop(
             tracker.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
         };
         let detect_ms = started.elapsed().as_secs_f64() * 1e3;
-        write_csv(&mut csv, cap.seq, cap.pts, detect_ms, &tags)?;
+        write_csv(&mut csv, cap.seq, pts, detect_ms, &tags)?;
 
         stats.frames += 1;
         stats.frames_with_tags += u64::from(!tags.is_empty());
@@ -446,11 +329,11 @@ fn detect_loop(
             *stats.per_id.entry(tag.id).or_default() += 1;
         }
         stats.detect_ms.push(detect_ms);
-        stats.last_pts = cap.pts;
+        stats.last_pts = pts;
 
         processed.fetch_add(1, Ordering::Relaxed);
         let detected = Detected {
-            pts: cap.pts,
+            pts,
             buf: cap.buf,
             k: *k,
             tags,

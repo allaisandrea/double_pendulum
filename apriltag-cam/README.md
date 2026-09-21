@@ -91,3 +91,63 @@ radial trend in depth — apparent depth drifts as a tag crosses the frame,
 correlating −0.2 to −0.5 with image radius — which is uncorrected lens
 distortion. The tool has no distortion model at all, so fixing that needs
 code, not just better numbers.
+
+## collect: RL training data
+
+`collect` drives the motor while recording what the camera sees, with every
+timestamp on one monotonic clock (`CLOCK_UPTIME_RAW`). It needs the Arducam
+and the Uno running `arduino/arduino.ino`.
+
+From the repository root:
+
+```sh
+cargo build --manifest-path apriltag-cam/Cargo.toml
+./apriltag-cam/target/debug/collect --duration 60                    # stand-in policy, ±30
+./apriltag-cam/target/debug/collect --policy-range 0 --duration 20   # everything but motion
+uv run apriltag-cam/check_recording.py recordings/<unix time>
+```
+
+**Two loops on a fixed grid.** Slot k starts at `t0 + k × period` (20 ms).
+Every `--plan-every-ms` (80), one loop takes a fresh frame, detects tags and
+asks the policy for a chunk of actions (8), which starts at the first slot at
+least `--offset-ms` (60) after the frame's capture time. Planning slower than
+the grid is what lets a chunk play out: each plan runs about 4 actions before
+the next takes over. Planned on every frame (~78 fps), each was superseded
+after its first action, and detection kept both cores so busy that the
+executor stalled. The other, a high-priority executor, wakes at each
+slot boundary and writes one byte. A newer plan takes over from its own first
+slot; until then the previous plan keeps the slots in between, since a plan
+normally arrives before it starts. A slot no plan covers is a **gap** and gets
+0. For now the policy is a stand-in: each plan repeats one random action in
+±`--policy-range`, seeded by `--seed` (recorded).
+
+**Output**: `recordings/<unix time>/observations.arrows` and `actions.arrows`,
+Arrow IPC streams. A stream is readable up to its last batch even after a
+crash, and batches are written about once a second. Read them with
+`pyarrow.ipc.open_stream` or `polars.read_ipc_stream`. Times are
+`Duration(ns)` relative to t0; run parameters are in the schema metadata.
+
+| observations | |
+| --- | --- |
+| `frame` | camera sequence number |
+| `t_capture`, `t_detected` | sensor capture, poses ready |
+| `tag{id}_pose` | `[x, y, z, qw, qx, qy, qz]`, f32, null when unseen; qw ≥ 0 |
+| `tag{id}_err`, `_alt_err`, `_margin` | pose quality; `alt_err` flags the ambiguous poses |
+| `t_policy`, `t_plan` | policy invoked, plan available |
+| `k_start`, `plan` | the plan's first slot, and all of its actions |
+
+| actions | |
+| --- | --- |
+| `slot` | its time is `slot × period` |
+| `action` | the byte sent |
+| `frame`, `index` | which plan supplied it, and where in it; null for a gap |
+
+A slot missing from `actions` was skipped because the executor fell more than
+a slot behind; the board kept the previous action through it. The run summary
+reports that, the executor's lateness against the grid, how early plans
+arrived before their first slot (tune `--offset-ms` with it), and each frame's
+age on arrival, which doubles as a check that the camera's timestamps are on
+the same clock.
+
+If the Uno speaks after its ready line, it has reset, so `collect` stops and
+reports the recording as unreliable.
