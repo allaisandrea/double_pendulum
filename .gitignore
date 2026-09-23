@@ -3,3 +3,4 @@ recordings/
 .DS_Store
 __pycache__/
 tools/bin/
+analysis/*.png
