@@ -34,8 +34,10 @@ there as `AVCaptureDeviceTypeExternal`; macOS 13 calls it
 
 ## Rig setup
 
-**The camera is mounted upside down, 23.5 inches (0.60 m) from the tags**
-(measured 2026-09-23). Tag 0 is nearest the hub, tag 2 is at the free end. Tag 2 moves
+**The camera is mounted upside down, 23.5 inches (0.60 m) from tag 0**
+(measured 2026-09-23). Tag 0 is nearest the hub, tag 2 is at the free end.
+Each link sits closer to the camera than the one before, so that they can
+rotate over each other (see [Pose accuracy](#pose-accuracy)). Tag 2 moves
 fastest and is always in front; tags 0 and 1 can be hidden behind the links
 in front of them. The arm hanging at rest puts tag 2 near the top of the
 image, about 30 px from the edge; the full swing stays inside the frame.
@@ -140,16 +142,19 @@ unaffected.
 **The intrinsics are not calibrated; `--hfov 72` is an estimate.** Depth
 scales with the assumed focal length. At the old default of 60° (fx 1108.5
 px), with the arm at rest and the correct tag size, the tags reported depths
-of 0.745 m (tag 0), 0.725 m (tag 1) and 0.706 m (tag 2) against a measured
-0.597 m. So the true focal length is the assumed one times `0.597 /
-reported`: about 890 px, a horizontal field of view of about 72°, from tag
-0, which is nearest the image centre. Tag 2 gives about 69°. The tape measure's reference point (lens front or sensor)
-is uncertain by a centimetre or two, a few percent. Depth falling from tag 0
-to tag 2 is the same effect seen as a tag crosses the frame (correlating
-−0.2 to −0.5 with image radius): uncorrected lens distortion, or the
-pendulum's plane not quite parallel to the sensor. The tool has no
-distortion model, so fixing that needs a proper calibration and code, not
-just a better field of view.
+of 0.745 m (tag 0), 0.725 m (tag 1) and 0.706 m (tag 2), and tag 0
+measures 0.597 m from the camera. So the true focal length is the assumed
+one times `0.597 / 0.745`: about 890 px, a horizontal field of view of
+about 72°. The tape measure's reference point (lens front or sensor) is
+uncertain by a centimetre or two, a few percent.
+
+The tags are not coplanar: each link sits closer to the camera than the one
+before, so that they can rotate over each other. At the defaults, tag 0
+reads 0.592 m, tag 1 0.577 m and tag 2 0.562 m at rest, about 15 mm per
+link. Apparent depth also drifts as a single tag crosses the frame
+(correlating −0.2 to −0.5 with image radius), which is uncorrected lens
+distortion. The tool has no distortion model, so fixing that needs a proper
+calibration and code, not just a better field of view.
 
 ## collect: RL training data
 
