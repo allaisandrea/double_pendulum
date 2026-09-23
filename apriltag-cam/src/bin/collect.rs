@@ -120,7 +120,7 @@ struct Args {
     tags: Vec<usize>,
 
     /// Edge of the tag's black square, in metres
-    #[arg(long, default_value_t = 0.040)]
+    #[arg(long, default_value_t = 0.023)]
     tag_size: f64,
 
     /// Tag family

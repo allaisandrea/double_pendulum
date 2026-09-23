@@ -42,7 +42,7 @@ UVC or when the defaults do not suit the light.
 | `--camera` | `0` | index, or part of the name (e.g. `Arducam`) |
 | `--exposure-us` | `500` | fixed exposure in µs; `0` leaves it automatic |
 | `--gain` | `100` | sensor gain, 0..100 |
-| `--tag-size` | `0.040` | black square's edge in metres, 0.8× the sheet's nominal size |
+| `--tag-size` | `0.023` | black square's edge in metres, 0.8× the sheet's nominal size |
 | `--hfov` | `60` | horizontal field of view, used when `--fx/--fy` are absent |
 | `--decimate` | `2` | quad search runs on an image this many times smaller |
 | `--duration` | — | stop after this many seconds |
@@ -66,7 +66,7 @@ for the same two cores.
 **Frame spacing is uneven** — 8 ms at best, 33 ms median, 274 ms at worst.
 A control loop must use the timestamps rather than assume a fixed step.
 
-**Do not trust the tag normals.** At 27 inches a 40 mm tag spans only tens of
+**Do not trust the tag normals.** At 27 inches a 23 mm tag spans only tens of
 pixels, which puts planar pose estimation deep into its ambiguous regime: two
 orientations project almost identically, differing only by perspective worth
 a fraction of a pixel. Roughly two thirds of poses come back with a second,

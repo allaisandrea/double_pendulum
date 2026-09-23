@@ -43,7 +43,7 @@ struct Args {
     duration: Option<f64>,
 
     /// Edge of the tag's black square, in metres (0.8x the sheet's nominal size)
-    #[arg(long, default_value_t = 0.040)]
+    #[arg(long, default_value_t = 0.023)]
     tag_size: f64,
 
     /// Tag family
