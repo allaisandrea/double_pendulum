@@ -44,17 +44,20 @@ pub struct Device {
 impl Device {
     /// Finds the UVC device behind an AVFoundation unique id.
     ///
-    /// The unique id starts with the USB location id, which is also what
-    /// `uvc-util -d` prints, so the two can be matched without relying on
-    /// device names that may repeat.
+    /// The unique id is one hex number packing the USB location id, vendor
+    /// and product, all of which `uvc-util -d` prints, so the two can be
+    /// matched without relying on device names that may repeat. Compare them
+    /// as numbers: the unique id drops the location's leading zeros, so
+    /// location 0x01110000 appears as `0x1110000...`.
     pub fn find(camera_id: &str) -> Result<Self> {
         let tool = find_tool()?;
         let listing = run(&tool, &["-d"])?;
+        let camera = parse_hex(camera_id);
         let mut candidates = Vec::new();
         for line in listing.lines() {
             // index, vend:prod, location, uvc version, then the name
             let mut f = line.split_whitespace();
-            let (Some(index), Some(_vp), Some(location), Some(_ver)) =
+            let (Some(index), Some(vp), Some(location), Some(_ver)) =
                 (f.next(), f.next(), f.next(), f.next())
             else {
                 continue;
@@ -63,7 +66,11 @@ impl Device {
                 continue; // a header or separator row
             }
             let name = f.collect::<Vec<_>>().join(" ");
-            if camera_id.starts_with(location) {
+            let unique_id = (|| {
+                let (vendor, product) = vp.split_once(':')?;
+                Some(parse_hex(location)? << 32 | parse_hex(vendor)? << 16 | parse_hex(product)?)
+            })();
+            if camera.is_some() && camera == unique_id {
                 return Ok(Self {
                     tool,
                     index: index.to_string(),
@@ -198,4 +205,8 @@ fn run(tool: &Path, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn parse_hex(s: &str) -> Option<u64> {
+    u64::from_str_radix(s.strip_prefix("0x")?, 16).ok()
 }
