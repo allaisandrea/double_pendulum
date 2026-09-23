@@ -20,8 +20,15 @@ chunks long compared with a swing are close to independent. Reported: the
 mean over chunks ± its standard error (std / sqrt(chunks)), and the std.
 Two runs differ meaningfully only when their means are further apart than
 about 2 * sqrt(se1² + se2²).
+
+Recall assumes the tags stay in frame, so each run is also checked for tags
+detected within --edge-px of the image border: a tag seen that close may
+leave the frame on other frames, which would count as misses. The corners
+are recovered by projecting each pose back through the recorded intrinsics
+and tag size, which undoes the pose fit exactly, even when both are wrong.
 """
 import argparse
+import re
 from pathlib import Path
 
 import numpy as np
@@ -37,9 +44,35 @@ def load(run):
     meta = {k.decode(): v.decode() for k, v in obs.schema.metadata.items()}
     t = np.array(obs["t_capture"].cast("int64").to_pylist())
     tags = [int(i) for i in meta["tags"].strip("[]").split(",")]
-    seen = {tag: np.array([p is not None for p in obs[f"tag{tag}_pose"].to_pylist()])
-            for tag in tags}
-    return t, seen, meta
+    poses = {tag: np.array([p if p is not None else [np.nan] * 7
+                            for p in obs[f"tag{tag}_pose"].to_pylist()])
+             for tag in tags}
+    return t, poses, meta
+
+
+def corners_px(poses, meta):
+    """Pixel corners (N, 4, 2) of each tag pose [x, y, z, qw, qx, qy, qz]."""
+    k = dict(re.findall(r"(\w+)=([-\d.e]+)", meta["intrinsics"]))
+    fx, fy, cx, cy = (float(k[n]) for n in ("fx", "fy", "cx", "cy"))
+    h = float(meta["tag_size_m"]) / 2
+    corners = np.array([[-h, -h, 0], [h, -h, 0], [h, h, 0], [-h, h, 0]])
+    t, (w, x, y, z) = poses[:, :3], poses[:, 3:].T
+    r = np.stack([
+        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], -1),
+        np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], -1),
+        np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1),
+    ], -2)
+    cam = np.einsum("nij,cj->nci", r, corners) + t[:, None, :]
+    return np.stack([fx * cam[..., 0] / cam[..., 2] + cx,
+                     fy * cam[..., 1] / cam[..., 2] + cy], -1)
+
+
+def edge_distance(poses, meta):
+    """Each detection's closest corner to the image border, in pixels; NaN if unseen."""
+    width, height = (int(v) for v in re.search(r"(\d+)x(\d+)", meta["camera"]).groups())
+    c = corners_px(poses, meta)
+    d = np.minimum.reduce([c[..., 0], width - 1 - c[..., 0], c[..., 1], height - 1 - c[..., 1]])
+    return d.min(axis=1)
 
 
 def active_mask(t, meta):
@@ -74,10 +107,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("runs", type=Path, nargs="+", help="recording directories")
     ap.add_argument("--chunks", type=int, default=8)
+    ap.add_argument("--edge-px", type=float, default=20,
+                    help="warn about tags detected this close to the image border")
     args = ap.parse_args()
 
     for run in args.runs:
-        t, seen, meta = load(run)
+        t, poses, meta = load(run)
+        if len(t) == 0:
+            print(f"{run}: no observations\n")
+            continue
+        seen = {tag: ~np.isnan(p[:, 0]) for tag, p in poses.items()}
         on = active_mask(t, meta)
         n_on = int(on.sum())
         duration = (t.max() - t.min()) / 1e9
@@ -94,6 +133,17 @@ def main():
             mean, se, std = chunk_stats(s[on], args.chunks)
             rest = f"{100 * s[~on].mean():6.1f}%" if (~on).any() else "     —"
             print(f"  {name:9} {100 * mean:12.1f}% ± {100 * se:4.1f}% {100 * std:9.1f}% {rest}")
+        for tag, p in poses.items():
+            d = edge_distance(p, meta)
+            near = np.nan_to_num(d, nan=np.inf) < args.edge_px
+            if near.any():
+                print(f"  WARNING: tag {tag} detected within {args.edge_px:g} px of the border "
+                      f"in {near.sum()} frames (closest {np.nanmin(d):.0f} px); "
+                      "it may leave the frame, which counts as a miss")
+        closest = {tag: np.nanmin(edge_distance(p, meta)) for tag, p in poses.items()
+                   if (~np.isnan(p[:, 0])).any()}
+        print("  closest to the border: "
+              + ", ".join(f"tag {tag} {d:.0f} px" for tag, d in closest.items()))
         print()
 
 
