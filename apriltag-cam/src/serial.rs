@@ -34,6 +34,10 @@ pub fn find_port() -> Result<String> {
 
 /// Opens the port, which resets the Uno, and waits for its ready line.
 /// Bytes sent before that line would go to the bootloader.
+///
+/// The line must be read through its end: the sketch's `println` ends it
+/// with "\r\n", and a read that stopped short would leave the "\n" for
+/// `watch` to hear, which takes it for a reset.
 pub fn open(path: &str) -> Result<Box<dyn SerialPort>> {
     let mut port = serialport::new(path, BAUD)
         .timeout(Duration::from_millis(50))
@@ -42,7 +46,8 @@ pub fn open(path: &str) -> Result<Box<dyn SerialPort>> {
     let started = Instant::now();
     let mut seen = Vec::new();
     let mut buf = [0u8; 64];
-    while !String::from_utf8_lossy(&seen).contains(READY) {
+    let line = format!("{READY}\r\n");
+    while !String::from_utf8_lossy(&seen).contains(&line) {
         if started.elapsed() > Duration::from_secs(5) {
             bail!(
                 "no {READY:?} from {path} after 5 s (got {:?}); is arduino/arduino.ino flashed?",
