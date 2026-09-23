@@ -15,7 +15,9 @@
 //! the schedule assigns to that slot, and writes it as one byte. Neither loop
 //! touches the disk: the logger writes both tables.
 //!
-//! For now the policy is a stand-in that picks one random action per chunk.
+//! For now the policy is a stand-in that holds one random action for each
+//! block of --hold-ms, chosen from the seed and the block alone, so the
+//! motion does not depend on how often plans are made or when they land.
 
 use anyhow::{anyhow, bail, Context, Result};
 use apriltag_cam::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
@@ -27,8 +29,6 @@ use apriltag_cam::record::{self, ActRow, ObsRow, Table, TagRow};
 use apriltag_cam::{serial, uvc};
 use clap::Parser;
 use nokhwa::pixel_format::RgbFormat;
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -67,10 +67,17 @@ struct Args {
     #[arg(long, default_value_t = 80)]
     plan_every_ms: u64,
 
-    /// Stand-in policy: each plan repeats one action drawn uniformly from
-    /// -range..=range. 0 sends only zeros, so nothing moves
+    /// Stand-in policy: each block of --hold-ms repeats one action drawn
+    /// uniformly from -range..=range. 0 sends only zeros, so nothing moves
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u8).range(0..=127))]
     policy_range: u8,
+
+    /// Stand-in policy: how long each random action is held, in
+    /// milliseconds, rounded to whole slots. Blocks sit on the slot grid, so
+    /// the same seed sends the same action in the same slot on every run,
+    /// whatever --plan-every-ms is
+    #[arg(long, default_value_t = 80)]
+    hold_ms: u64,
 
     /// The stand-in policy is on for this long, then rests (all zeros) for
     /// --rest-s, and repeats, so one recording holds both driven motion and
@@ -248,22 +255,45 @@ fn status_line(live: &Live, prev: &Counts, now: &Counts, elapsed: Duration, phas
     )
 }
 
-/// Stand-in for a real policy: one random action, repeated for the chunk,
-/// except in the slots that fall in a rest period.
+/// Stand-in for a real policy: one random action per block of `hold`
+/// slots, except in the slots that fall in a rest period.
+///
+/// The action is a hash of the seed and the block, not a draw from a
+/// running generator, so a slot's action does not depend on how many plans
+/// came before it. With a stateful generator, the planning rate would set
+/// how often the action changes, and timing jitter would shift which slots
+/// each draw lands on from one run to the next.
 struct FakePolicy {
-    rng: StdRng,
+    seed: u64,
     range: i8,
+    hold: i64,
     chunk: usize,
     duty: DutyCycle,
 }
 
 impl FakePolicy {
-    fn plan(&mut self, k_start: i64) -> Vec<i8> {
-        let a = self.rng.random_range(-self.range..=self.range);
-        (0..self.chunk as i64)
-            .map(|i| if self.duty.resting(k_start + i) { 0 } else { a })
-            .collect()
+    fn plan(&self, k_start: i64) -> Vec<i8> {
+        (k_start..k_start + self.chunk as i64).map(|k| self.action(k)).collect()
     }
+
+    fn action(&self, slot: i64) -> i8 {
+        if self.duty.resting(slot) {
+            return 0;
+        }
+        let block = slot.div_euclid(self.hold) as u64;
+        let h = splitmix64(self.seed ^ splitmix64(block));
+        let span = 2 * self.range as u64 + 1;
+        (h % span) as i8 - self.range
+    }
+}
+
+/// A 64-bit mixing function (SplitMix64's finaliser): nearby inputs give
+/// unrelated outputs, and it is fixed here, independent of any crate.
+fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// Alternating active and rest periods, measured in slots from slot 0.
@@ -297,6 +327,7 @@ fn main() -> Result<()> {
     let seed = args.seed.unwrap_or_else(rand::random);
     anyhow::ensure!(args.active_s > 0.0 && args.rest_s >= 0.0, "--active-s must be positive, --rest-s not negative");
     let duty = DutyCycle::new(args.active_s, args.rest_s, period);
+    let hold = ((args.hold_ms as f64 / args.period_ms as f64).round() as i64).max(1);
 
     let out = args.out.clone().unwrap_or_else(|| {
         let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -375,7 +406,8 @@ fn main() -> Result<()> {
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
-        ("policy", "fake: one uniform random action per plan, zero while resting".into()),
+        ("policy", "fake: one uniform random action per block of hold_slots, from a hash of seed and block; zero while resting".into()),
+        ("hold_slots", hold.to_string()),
         ("policy_range", args.policy_range.to_string()),
         ("active_slots", duty.active.to_string()),
         ("rest_slots", duty.rest.to_string()),
@@ -418,8 +450,9 @@ fn main() -> Result<()> {
         let (args, stop, schedule, rows, live) =
             (args.clone(), stop.clone(), schedule.clone(), row_tx.clone(), live.clone());
         let policy = FakePolicy {
-            rng: StdRng::seed_from_u64(seed),
+            seed,
             range: args.policy_range as i8,
+            hold,
             chunk: args.chunk as usize,
             duty,
         };
@@ -532,7 +565,7 @@ fn perceive_loop(
     grid: Grid,
     offset: Duration,
     slot: &Latest<Captured>,
-    mut policy: FakePolicy,
+    policy: FakePolicy,
     schedule: &Mutex<Schedule>,
     rows: &Sender<Row>,
     live: &Live,
@@ -896,18 +929,37 @@ mod tests {
         assert!((0..1000).all(|k| !d.resting(k)));
     }
 
+    fn policy(hold: i64, duty: DutyCycle) -> FakePolicy {
+        FakePolicy { seed: 1, range: 30, hold, chunk: 8, duty }
+    }
+
     #[test]
     fn a_chunk_straddling_a_rest_is_zeroed_from_the_boundary() {
-        let mut p = FakePolicy {
-            rng: StdRng::seed_from_u64(1),
-            range: 30,
-            chunk: 8,
-            duty: DutyCycle::new(0.1, 0.1, Duration::from_millis(20)), // 5 on, 5 off
-        };
+        // One block covers slots 0..20; 5 slots on, 5 off.
+        let p = policy(20, DutyCycle::new(0.1, 0.1, Duration::from_millis(20)));
         // Slots 3..11: on for 3 and 4, resting 5..=9, on again at 10.
         let plan = p.plan(3);
         let a = plan[0];
         assert_ne!(a, 0, "seed 1 draws a non-zero action");
         assert_eq!(plan, [a, a, 0, 0, 0, 0, 0, a]);
+    }
+
+    #[test]
+    fn actions_hold_for_a_block_on_the_grid_whatever_the_plan() {
+        let p = policy(4, DutyCycle::new(1e6, 0.0, Duration::from_millis(20)));
+        let a: Vec<i8> = (0..400).map(|k| p.action(k)).collect();
+        for b in a.chunks(4) {
+            assert!(b.iter().all(|&x| x == b[0]), "a block changed action: {b:?}");
+        }
+        // Overlapping plans agree on every slot they share.
+        for k in 0..390 {
+            assert_eq!(p.plan(k), a[k as usize..k as usize + 8]);
+        }
+        // Blocks differ from each other, and span the range.
+        let blocks: Vec<i8> = a.iter().step_by(4).copied().collect();
+        assert!(blocks.windows(2).any(|w| w[0] != w[1]));
+        assert!(blocks.iter().all(|x| (-30..=30).contains(x)));
+        let mean = blocks.iter().map(|&x| x as f64).sum::<f64>() / blocks.len() as f64;
+        assert!(mean.abs() < 5.0, "mean action {mean} is far from 0");
     }
 }

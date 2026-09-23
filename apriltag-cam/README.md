@@ -118,8 +118,11 @@ executor stalled. The other, a high-priority executor, wakes at each
 slot boundary and writes one byte. A newer plan takes over from its own first
 slot; until then the previous plan keeps the slots in between, since a plan
 normally arrives before it starts. A slot no plan covers is a **gap** and gets
-0. For now the policy is a stand-in: each plan repeats one random action in
-±`--policy-range`, seeded by `--seed` (recorded). It runs for `--active-s`
+0. For now the policy is a stand-in: it holds one random action in
+±`--policy-range` for each `--hold-ms` (80) block of slots. The action is a
+hash of `--seed` (recorded) and the block, so it does not depend on the
+planning rate, and the same seed sends the same action in the same slot on
+every run. It runs for `--active-s`
 (20) and then rests for `--rest-s` (5), sending zeros, and repeats, so one
 recording holds both driven motion and the arm settling afterwards. The
 schedule follows the slot grid, so a rest starts on time even inside a chunk.
