@@ -8,10 +8,10 @@
 //!
 //! perceive+policy plans every --plan-every-ms: it takes a fresh frame,
 //! detects tags, asks the policy for a chunk of actions, and schedules it to
-//! start at a fixed offset after the frame's capture time. Planning slower
-//! than the grid is what lets a chunk play out: planned every frame (~78 fps
-//! here), each plan was superseded after its first action, and detection kept
-//! both cores so busy that the executor stalled. The executor wakes at every slot boundary, takes the action
+//! start at a fixed offset after the frame's capture time. By default it
+//! plans on every frame, 120 a second, so each observation is recorded; a
+//! newer plan takes over from its first slot, so most plans play only their
+//! first action or two. The executor wakes at every slot boundary, takes the action
 //! the schedule assigns to that slot, and writes it as one byte. Neither loop
 //! touches the disk: the logger writes both tables.
 //!
@@ -63,13 +63,14 @@ struct Args {
     offset_ms: u64,
 
     /// Plan this often, in milliseconds; 0 plans on every frame. Each plan
-    /// then plays about this long before the next takes over
-    #[arg(long, default_value_t = 80)]
+    /// then plays about this long before the next takes over. Frames between
+    /// plans are not detected, so they are missing from the observations
+    #[arg(long, default_value_t = 0)]
     plan_every_ms: u64,
 
     /// Stand-in policy: each block of --hold-ms repeats one action drawn
     /// uniformly from -range..=range. 0 sends only zeros, so nothing moves
-    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u8).range(0..=127))]
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u8).range(0..=127))]
     policy_range: u8,
 
     /// Stand-in policy: how long each random action is held, in
@@ -107,12 +108,13 @@ struct Args {
     #[arg(long, default_value = "Arducam")]
     camera: String,
 
-    /// Fixed exposure in microseconds; 0 leaves it to the camera
-    #[arg(long, default_value_t = 500)]
+    /// Fixed exposure in microseconds; 0 leaves it to the camera. The
+    /// default was measured best on this rig; see the README
+    #[arg(long, default_value_t = 200)]
     exposure_us: u32,
 
     /// Sensor gain, 0..100
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 75)]
     gain: u16,
 
     /// Tag ids to record, one column group each
@@ -127,8 +129,9 @@ struct Args {
     #[arg(long, default_value = "tag36h11")]
     family: String,
 
-    /// Horizontal field of view in degrees, when --fx/--fy are not given
-    #[arg(long, default_value_t = 60.0)]
+    /// Horizontal field of view in degrees, when --fx/--fy are not given.
+    /// Estimated from the rig's measured camera distance; see the README
+    #[arg(long, default_value_t = 72.0)]
     hfov: f64,
 
     /// Calibrated focal length along x, in pixels
@@ -147,7 +150,8 @@ struct Args {
     #[arg(long, requires = "cx")]
     cy: Option<f64>,
 
-    /// Detector threads. Two leaves the executor a core on this laptop
+    /// Detector threads. Two keep up with 120 fps on the M4 (about 5 ms a
+    /// frame) and leave the other cores to the executor
     #[arg(long, default_value_t = 2)]
     threads: u8,
 

@@ -51,8 +51,9 @@ struct Args {
     family: String,
 
     /// Horizontal field of view in degrees, for nominal intrinsics when
-    /// --fx/--fy are not given
-    #[arg(long, default_value_t = 60.0)]
+    /// --fx/--fy are not given. The default is the Arducam's, estimated from
+    /// the rig's measured camera distance; it is not a calibration
+    #[arg(long, default_value_t = 72.0)]
     hfov: f64,
 
     /// Calibrated focal length along x, in pixels
@@ -71,21 +72,22 @@ struct Args {
     #[arg(long, requires = "cx")]
     cy: Option<f64>,
 
-    /// Camera to record from: an index, or part of its name (e.g. SK-C201).
-    /// The cameras on offer are listed at startup
-    #[arg(long, default_value = "0")]
+    /// Camera to record from: an index, or part of its name. The cameras on
+    /// offer are listed at startup; their order is not stable, so a name is
+    /// safer than an index
+    #[arg(long, default_value = "Arducam")]
     camera: String,
 
     /// Fix the exposure time, in microseconds, before recording; 0 leaves
     /// the camera metering automatically. Automatic metering hunts as the
-    /// arm swings and blurs it, so a fixed short exposure is the default.
-    /// Needs `tools/bin/uvc-util`
-    #[arg(long, default_value_t = 500)]
+    /// arm swings and blurs it, so a fixed short exposure is the default,
+    /// measured best on this rig (see the README). Needs `tools/bin/uvc-util`
+    #[arg(long, default_value_t = 200)]
     exposure_us: u32,
 
-    /// Sensor gain, 0..100. Gain amplifies noise along with the signal, but
-    /// at 500 us there is not enough light on the tags without it
-    #[arg(long, default_value_t = 100)]
+    /// Sensor gain, 0..100. Too little leaves the tag by the hub too dark to
+    /// decode; too much costs the moving tags detections
+    #[arg(long, default_value_t = 75)]
     gain: u16,
 
     /// Detector threads
