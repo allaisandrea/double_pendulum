@@ -72,9 +72,25 @@ struct Args {
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u8).range(0..=127))]
     policy_range: u8,
 
+    /// The stand-in policy is on for this long, then rests (all zeros) for
+    /// --rest-s, and repeats, so one recording holds both driven motion and
+    /// the arm settling afterwards. Seconds, on the slot grid from t0
+    #[arg(long, default_value_t = 20.0)]
+    active_s: f64,
+
+    /// Rest between active periods, in seconds; 0 never rests. At zero duty
+    /// the shield brakes the motor, so the arm settles damped, not free
+    #[arg(long, default_value_t = 5.0)]
+    rest_s: f64,
+
     /// Seed for the stand-in policy [default: random, printed and recorded]
     #[arg(long)]
     seed: Option<u64>,
+
+    /// Print a status line this often, in seconds; 0 prints only the final
+    /// summary
+    #[arg(long, default_value_t = 10.0)]
+    status_every_s: f64,
 
     /// Serial port of the Arduino [default: found by USB vendor id]
     #[arg(long)]
@@ -150,17 +166,126 @@ enum Row {
     Act(ActRow),
 }
 
-/// Stand-in for a real policy: one random action, repeated for the chunk.
+/// Counters both loops bump as they go, read by the periodic status line.
+/// Atomics, so the executor never waits on a lock or allocates for them.
+struct Live {
+    frames: AtomicU64,
+    /// Frames each recorded tag was seen in, in `--tags` order.
+    tags: Vec<AtomicU64>,
+    late_plans: AtomicU64,
+    slots: AtomicU64,
+    gaps: AtomicU64,
+    skipped: AtomicU64,
+    late_writes: AtomicU64,
+    /// Worst write lateness and slowest detection since the last status
+    /// line, in microseconds; the status line resets them.
+    worst_write_us: AtomicU64,
+    slowest_detect_us: AtomicU64,
+}
+
+impl Live {
+    fn new(n_tags: usize) -> Self {
+        Self {
+            frames: AtomicU64::new(0),
+            tags: (0..n_tags).map(|_| AtomicU64::new(0)).collect(),
+            late_plans: AtomicU64::new(0),
+            slots: AtomicU64::new(0),
+            gaps: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+            late_writes: AtomicU64::new(0),
+            worst_write_us: AtomicU64::new(0),
+            slowest_detect_us: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> Counts {
+        let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        Counts {
+            frames: get(&self.frames),
+            tags: self.tags.iter().map(get).collect(),
+            late_plans: get(&self.late_plans),
+            slots: get(&self.slots),
+            gaps: get(&self.gaps),
+            skipped: get(&self.skipped),
+            late_writes: get(&self.late_writes),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Counts {
+    frames: u64,
+    tags: Vec<u64>,
+    late_plans: u64,
+    slots: u64,
+    gaps: u64,
+    skipped: u64,
+    late_writes: u64,
+}
+
+/// One line covering the interval since `prev`.
+fn status_line(live: &Live, prev: &Counts, now: &Counts, elapsed: Duration, phase: &str) -> String {
+    let frames = now.frames - prev.frames;
+    let tags: Vec<String> = now
+        .tags
+        .iter()
+        .zip(&prev.tags)
+        .map(|(n, p)| format!("{:.0}", 100.0 * (n - p) as f64 / frames.max(1) as f64))
+        .collect();
+    let us = |a: &AtomicU64| a.swap(0, Ordering::Relaxed) as f64 / 1e3;
+    format!(
+        "[{:5.0} s]{phase} {frames} frames, tags {}% | {} slots: {} gaps, {} skipped, \
+         {} late (worst {:.1} ms) | {} late plans, slowest detection {:.0} ms",
+        elapsed.as_secs_f64(),
+        tags.join("/"),
+        now.slots - prev.slots,
+        now.gaps - prev.gaps,
+        now.skipped - prev.skipped,
+        now.late_writes - prev.late_writes,
+        us(&live.worst_write_us),
+        now.late_plans - prev.late_plans,
+        us(&live.slowest_detect_us),
+    )
+}
+
+/// Stand-in for a real policy: one random action, repeated for the chunk,
+/// except in the slots that fall in a rest period.
 struct FakePolicy {
     rng: StdRng,
     range: i8,
     chunk: usize,
+    duty: DutyCycle,
 }
 
 impl FakePolicy {
-    fn plan(&mut self) -> Vec<i8> {
+    fn plan(&mut self, k_start: i64) -> Vec<i8> {
         let a = self.rng.random_range(-self.range..=self.range);
-        vec![a; self.chunk]
+        (0..self.chunk as i64)
+            .map(|i| if self.duty.resting(k_start + i) { 0 } else { a })
+            .collect()
+    }
+}
+
+/// Alternating active and rest periods, measured in slots from slot 0.
+/// Deciding per slot, not per plan, makes a rest start exactly on time even
+/// when a chunk straddles the boundary.
+#[derive(Clone, Copy, Debug)]
+struct DutyCycle {
+    active: i64,
+    rest: i64,
+}
+
+impl DutyCycle {
+    fn new(active_s: f64, rest_s: f64, period: Duration) -> Self {
+        let slots = |s: f64| (s / period.as_secs_f64()).round() as i64;
+        Self {
+            active: slots(active_s).max(1),
+            rest: slots(rest_s).max(0),
+        }
+    }
+
+    fn resting(&self, slot: i64) -> bool {
+        self.rest > 0 && slot.rem_euclid(self.active + self.rest) >= self.active
     }
 }
 
@@ -170,6 +295,8 @@ fn main() -> Result<()> {
     let offset = Duration::from_millis(args.offset_ms);
     anyhow::ensure!(period > Duration::ZERO, "--period-ms must be positive");
     let seed = args.seed.unwrap_or_else(rand::random);
+    anyhow::ensure!(args.active_s > 0.0 && args.rest_s >= 0.0, "--active-s must be positive, --rest-s not negative");
+    let duty = DutyCycle::new(args.active_s, args.rest_s, period);
 
     let out = args.out.clone().unwrap_or_else(|| {
         let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -248,8 +375,10 @@ fn main() -> Result<()> {
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
-        ("policy", "fake: one uniform random action per plan".into()),
+        ("policy", "fake: one uniform random action per plan, zero while resting".into()),
         ("policy_range", args.policy_range.to_string()),
+        ("active_slots", duty.active.to_string()),
+        ("rest_slots", duty.rest.to_string()),
         ("seed", seed.to_string()),
         ("board", serial::READY.into()),
     ]
@@ -273,6 +402,7 @@ fn main() -> Result<()> {
         .spawn(move || log_loop(row_rx, observations, actions))?;
 
     let schedule = Arc::new(Mutex::new(Schedule::default()));
+    let live = Arc::new(Live::new(args.tags.len()));
 
     let reset = Arc::new(AtomicBool::new(false));
     let heard = Arc::new(Mutex::new(Vec::new()));
@@ -285,34 +415,60 @@ fn main() -> Result<()> {
     };
 
     let perceive = {
-        let (args, stop, schedule, rows) =
-            (args.clone(), stop.clone(), schedule.clone(), row_tx.clone());
+        let (args, stop, schedule, rows, live) =
+            (args.clone(), stop.clone(), schedule.clone(), row_tx.clone(), live.clone());
         let policy = FakePolicy {
             rng: StdRng::seed_from_u64(seed),
             range: args.policy_range as i8,
             chunk: args.chunk as usize,
+            duty,
         };
         thread::Builder::new()
             .name("perceive".into())
-            .spawn(move || perceive_loop(&args, k, grid, offset, &slot, policy, &schedule, &rows, &stop))?
+            .spawn(move || {
+                perceive_loop(&args, k, grid, offset, &slot, policy, &schedule, &rows, &live, &stop)
+            })?
     };
 
     let executor = {
-        let (stop, schedule, rows) = (stop.clone(), schedule.clone(), row_tx.clone());
+        let (stop, schedule, rows, live) =
+            (stop.clone(), schedule.clone(), row_tx.clone(), live.clone());
         thread::Builder::new()
             .name("executor".into())
-            .spawn(move || execute_loop(grid, port, &schedule, &rows, &stop))?
+            .spawn(move || execute_loop(grid, port, &schedule, &rows, &live, &stop))?
     };
     drop(row_tx); // the logger finishes once both loops have dropped theirs
 
+    let cycle = if duty.rest > 0 {
+        format!("{} s on, {} s rest", args.active_s, args.rest_s)
+    } else {
+        "always on".to_string()
+    };
     eprintln!(
-        "recording to {} (seed {seed}, policy ±{}); Ctrl-C to stop",
+        "recording to {} (seed {seed}, policy ±{}, {cycle}); Ctrl-C to stop",
         out.display(),
         args.policy_range
     );
     let started = Instant::now();
     let mut abort = None;
+    let status_every = Duration::from_secs_f64(args.status_every_s.max(0.0));
+    let mut next_status = started + status_every;
+    let mut prev = Counts {
+        tags: vec![0; args.tags.len()],
+        ..Counts::default()
+    };
     while !stop.load(Ordering::Relaxed) {
+        if !status_every.is_zero() && Instant::now() >= next_status {
+            let now = live.snapshot();
+            let phase = match grid.slot_at(mono()) {
+                Some(k) if duty.rest > 0 && duty.resting(k) => " resting |",
+                Some(_) if duty.rest > 0 => " active  |",
+                _ => "",
+            };
+            eprintln!("{}", status_line(&live, &prev, &now, started.elapsed(), phase));
+            prev = now;
+            next_status += status_every;
+        }
         if args.duration.is_some_and(|d| started.elapsed().as_secs_f64() >= d) {
             break;
         }
@@ -379,6 +535,7 @@ fn perceive_loop(
     mut policy: FakePolicy,
     schedule: &Mutex<Schedule>,
     rows: &Sender<Row>,
+    live: &Live,
     stop: &AtomicBool,
 ) -> Result<PerceiveStats> {
     let mut tracker = Tracker::new(&args.family, args.threads, args.decimate, args.tag_size, k)?;
@@ -426,14 +583,19 @@ fn perceive_loop(
         let t_detected = mono();
         stats.frames += 1;
         stats.detect_ms.push((t_detected - started).as_secs_f64() * 1e3);
+        live.frames.fetch_add(1, Ordering::Relaxed);
+        live.slowest_detect_us
+            .fetch_max((t_detected - started).as_micros() as u64, Ordering::Relaxed);
 
         let tag_rows: Vec<Option<TagRow>> = args
             .tags
             .iter()
-            .map(|&id| {
+            .enumerate()
+            .map(|(i, &id)| {
                 let tag = tags.iter().find(|t| t.id == id)?;
                 let pose = tag.pose.as_ref()?;
                 *stats.with_tag.entry(id).or_default() += 1;
+                live.tags[i].fetch_add(1, Ordering::Relaxed);
                 Some(TagRow {
                     pose: record::pose_row(pose.t, pose.quaternion()),
                     err: pose.err as f32,
@@ -444,8 +606,8 @@ fn perceive_loop(
             .collect();
 
         let t_policy = mono();
-        let actions = policy.plan();
         let k_start = grid.k_start(t_capture, offset);
+        let actions = policy.plan(k_start);
         let plan = Arc::new(Plan {
             frame: cap.seq,
             k_start,
@@ -453,9 +615,11 @@ fn perceive_loop(
         });
         schedule.lock().unwrap().push(plan);
         let t_plan = mono();
-        stats.lead_ms.push(
-            (grid.slot_time(k_start.max(0)).as_secs_f64() - t_plan.as_secs_f64()) * 1e3,
-        );
+        let lead_ms = (grid.slot_time(k_start.max(0)).as_secs_f64() - t_plan.as_secs_f64()) * 1e3;
+        stats.lead_ms.push(lead_ms);
+        if lead_ms < 0.0 {
+            live.late_plans.fetch_add(1, Ordering::Relaxed);
+        }
 
         let _ = rows.send(Row::Obs(ObsRow {
             frame: cap.seq,
@@ -569,6 +733,7 @@ fn execute_loop(
     mut port: Box<dyn serialport::SerialPort>,
     schedule: &Mutex<Schedule>,
     rows: &Sender<Row>,
+    live: &Live,
     stop: &AtomicBool,
 ) -> Result<ExecStats> {
     let scheduling = make_realtime(grid.period);
@@ -592,6 +757,7 @@ fn execute_loop(
             // skipped slots are missing from the actions table.
             if let Some(current) = grid.slot_at(now).filter(|&c| c > k) {
                 stats.skipped += (current - k) as u64;
+                live.skipped.fetch_add((current - k) as u64, Ordering::Relaxed);
                 eprintln!("executor: skipped slots {k}..{current}, {:?} behind", now - deadline);
                 k = current;
             }
@@ -601,16 +767,20 @@ fn execute_loop(
 
             stats.slots += 1;
             stats.worst = stats.worst.max(late);
+            live.slots.fetch_add(1, Ordering::Relaxed);
+            live.worst_write_us.fetch_max(late.as_micros() as u64, Ordering::Relaxed);
             let bin = (late.as_nanos() / LATE_BIN.as_nanos()) as usize;
             stats.hist[bin.min(LATE_BINS)] += 1;
             if late > LATE_WARN {
                 stats.late += 1;
+                live.late_writes.fetch_add(1, Ordering::Relaxed);
                 eprintln!("executor: slot {k} written {late:?} late");
             }
             let (frame, index) = match pick {
                 Pick::Plan { frame, index, .. } => (Some(frame), Some(index)),
                 Pick::Gap => {
                     stats.gaps += 1;
+                    live.gaps.fetch_add(1, Ordering::Relaxed);
                     (None, None)
                 }
             };
@@ -705,4 +875,39 @@ fn report(
         exec.quantile(0.99),
         exec.worst
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rests_start_and_end_exactly_on_their_slots() {
+        // 2 slots on, 3 off, at 20 ms per slot.
+        let d = DutyCycle::new(0.04, 0.06, Duration::from_millis(20));
+        let pattern: Vec<bool> = (0..10).map(|k| d.resting(k)).collect();
+        let (f, t) = (false, true);
+        assert_eq!(pattern, [f, f, t, t, t, f, f, t, t, t]);
+    }
+
+    #[test]
+    fn no_rest_means_always_on() {
+        let d = DutyCycle::new(1.0, 0.0, Duration::from_millis(20));
+        assert!((0..1000).all(|k| !d.resting(k)));
+    }
+
+    #[test]
+    fn a_chunk_straddling_a_rest_is_zeroed_from_the_boundary() {
+        let mut p = FakePolicy {
+            rng: StdRng::seed_from_u64(1),
+            range: 30,
+            chunk: 8,
+            duty: DutyCycle::new(0.1, 0.1, Duration::from_millis(20)), // 5 on, 5 off
+        };
+        // Slots 3..11: on for 3 and 4, resting 5..=9, on again at 10.
+        let plan = p.plan(3);
+        let a = plan[0];
+        assert_ne!(a, 0, "seed 1 draws a non-zero action");
+        assert_eq!(plan, [a, a, 0, 0, 0, 0, 0, a]);
+    }
 }

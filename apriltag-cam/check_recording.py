@@ -12,6 +12,7 @@ Exits non-zero if anything is inconsistent. Checks:
   - no action came from a plan that had already been superseded by a newer
     one available before the slot began;
   - every plan starts at the first slot at least the offset after its frame;
+  - every action in a rest period of the stand-in policy is 0;
 and reports gaps, skipped slots and how early plans arrived.
 """
 import sys
@@ -95,10 +96,19 @@ def main():
         if newest is not None and f < newest:
             problems.append(f"slot {s}: used plan {f}, superseded by plan {newest} before the slot began")
 
+    # The stand-in policy's rest periods, when the recording has them.
+    active, rest = int(meta.get("active_slots", 1)), int(meta.get("rest_slots", 0))
+    if rest:
+        for s, a in zip(slots, actions):
+            if s % (active + rest) >= active and a != 0:
+                problems.append(f"slot {s}: action {a} during a rest period")
+
     lead = sorted((ks * period - tp) / 1e6 for ks, tp in zip(k_start, t_plan) if ks is not None)
     late = sum(1 for x in lead if x < 0)
     print(f"{run}: {len(frames)} observations, {len(slots)} actions")
     print(f"  period {period / 1e6:g} ms, offset {offset / 1e6:g} ms, chunk {meta['chunk_len']}")
+    if rest:
+        print(f"  policy: {active * period / 1e9:g} s on, {rest * period / 1e9:g} s rest")
     print(f"  gaps: {gaps} ({100 * gaps / max(len(slots), 1):.1f}%), skipped slots: {holes}")
     if lead:
         print(f"  plan lead before its first slot: min {lead[0]:.1f}  "

@@ -102,7 +102,7 @@ From the repository root:
 
 ```sh
 cargo build --manifest-path apriltag-cam/Cargo.toml
-./apriltag-cam/target/debug/collect --duration 60                    # stand-in policy, ±30
+./apriltag-cam/target/debug/collect --duration 300 --gain 0          # ±30: 20 s on, 5 s rest
 ./apriltag-cam/target/debug/collect --policy-range 0 --duration 20   # everything but motion
 uv run apriltag-cam/check_recording.py recordings/<unix time>
 ```
@@ -119,7 +119,11 @@ slot boundary and writes one byte. A newer plan takes over from its own first
 slot; until then the previous plan keeps the slots in between, since a plan
 normally arrives before it starts. A slot no plan covers is a **gap** and gets
 0. For now the policy is a stand-in: each plan repeats one random action in
-±`--policy-range`, seeded by `--seed` (recorded).
+±`--policy-range`, seeded by `--seed` (recorded). It runs for `--active-s`
+(20) and then rests for `--rest-s` (5), sending zeros, and repeats, so one
+recording holds both driven motion and the arm settling afterwards. The
+schedule follows the slot grid, so a rest starts on time even inside a chunk.
+At zero duty the shield brakes the motor: the arm settles damped, not free.
 
 **Output**: `recordings/<unix time>/observations.arrows` and `actions.arrows`,
 Arrow IPC streams. A stream is readable up to its last batch even after a
@@ -142,9 +146,13 @@ crash, and batches are written about once a second. Read them with
 | `action` | the byte sent |
 | `frame`, `index` | which plan supplied it, and where in it; null for a gap |
 
+While it runs, `collect` prints a status line every `--status-every-s` (10):
+frames and how often each tag was seen, slots with their gaps, skips and late
+writes, late plans, and whether the policy is active or resting.
+
 A slot missing from `actions` was skipped because the executor fell more than
-a slot behind; the board kept the previous action through it. The run summary
-reports that, the executor's lateness against the grid, how early plans
+a slot behind; the board kept the previous action through it. The final
+summary reports that, the executor's lateness against the grid, how early plans
 arrived before their first slot (tune `--offset-ms` with it), and each frame's
 age on arrival, which doubles as a check that the camera's timestamps are on
 the same clock.
