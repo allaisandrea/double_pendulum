@@ -5,7 +5,6 @@
 
 pub mod camera;
 pub mod clock;
-mod draw;
 pub mod latest;
 pub mod mov;
 pub mod overlay_tag;
