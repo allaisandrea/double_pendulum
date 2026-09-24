@@ -12,6 +12,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use harness::camera::{self, capture_loop, pick_camera, Frame};
+use harness::constants::{HFOV_DEG, TAG_FAMILY, TAG_SIZE_M};
 use harness::latest::{Latest, Take};
 use harness::mov::MovWriter;
 use harness::tag_detector::{Intrinsics, Tag, TagDetector};
@@ -40,36 +41,6 @@ struct Args {
     /// Stop after this many seconds [default: run until Ctrl-C]
     #[arg(long)]
     duration: Option<f64>,
-
-    /// Edge of the tag's black square, in metres (0.8x the sheet's nominal size)
-    #[arg(long, default_value_t = 0.023)]
-    tag_size: f64,
-
-    /// Tag family
-    #[arg(long, default_value = "tag36h11")]
-    family: String,
-
-    /// Horizontal field of view in degrees, for nominal intrinsics when
-    /// --fx/--fy are not given. The default is the Arducam's, estimated from
-    /// the rig's measured camera distance; it is not a calibration
-    #[arg(long, default_value_t = 72.0)]
-    hfov: f64,
-
-    /// Calibrated focal length along x, in pixels
-    #[arg(long, requires = "fy")]
-    fx: Option<f64>,
-
-    /// Calibrated focal length along y, in pixels
-    #[arg(long, requires = "fx")]
-    fy: Option<f64>,
-
-    /// Principal point x, in pixels [default: image centre]
-    #[arg(long, requires = "cy")]
-    cx: Option<f64>,
-
-    /// Principal point y, in pixels [default: image centre]
-    #[arg(long, requires = "cx")]
-    cy: Option<f64>,
 
     /// Camera to record from: an index, or part of its name. The cameras on
     /// offer are listed at startup; their order is not stable, so a name is
@@ -101,18 +72,6 @@ struct Args {
     /// JPEG quality of recorded frames
     #[arg(long, default_value_t = 85, value_parser = clap::value_parser!(u8).range(1..=100))]
     quality: u8,
-}
-
-impl Args {
-    fn intrinsics(&self, width: u32, height: u32) -> Intrinsics {
-        let nominal = Intrinsics::from_hfov(width, height, self.hfov);
-        Intrinsics {
-            fx: self.fx.unwrap_or(nominal.fx),
-            fy: self.fy.unwrap_or(nominal.fy),
-            cx: self.cx.unwrap_or(nominal.cx),
-            cy: self.cy.unwrap_or(nominal.cy),
-        }
-    }
 }
 
 /// A frame with its detections, on its way to be drawn and recorded.
@@ -299,9 +258,9 @@ fn detect_loop(
         let res = frame.buf.resolution();
         let (w, h) = (res.width(), res.height());
         if detector.is_none() {
-            let k = args.intrinsics(w, h);
+            let k = Intrinsics::from_hfov(w, h, HFOV_DEG);
             detector = Some((
-                TagDetector::new(&args.family, args.threads, args.decimate, args.tag_size, k)?,
+                TagDetector::new(TAG_FAMILY, args.threads, args.decimate, TAG_SIZE_M, k)?,
                 k,
             ));
         }
@@ -385,7 +344,7 @@ fn render_loop(args: &Args, rx: Receiver<Detected>, path: &Path) -> Result<u64> 
                 .unwrap_or_else(|| RgbImage::new(w, h));
             yuyv_to_rgb(d.buf.buffer(), &mut img);
             for tag in &d.tags {
-                overlay_tag::draw_tag(&mut img, tag, &d.k, args.tag_size);
+                overlay_tag::draw_tag(&mut img, tag, &d.k, TAG_SIZE_M);
             }
 
             let (w16, h16) = (u16::try_from(w)?, u16::try_from(h)?);

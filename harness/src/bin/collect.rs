@@ -18,6 +18,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::clock::mono;
+use harness::constants::{HFOV_DEG, TAG_FAMILY, TAG_SIZE_M};
 use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step, HISTORY_LENGTH};
 use harness::table::{self, FrameRow, Table, TagRow};
@@ -96,35 +97,6 @@ struct Args {
     #[arg(long, default_value_t = 75)]
     gain: u16,
 
-    /// Edge of the tag's black square, in metres
-    #[arg(long, default_value_t = 0.023)]
-    tag_size: f64,
-
-    /// Tag family
-    #[arg(long, default_value = "tag36h11")]
-    family: String,
-
-    /// Horizontal field of view in degrees, when --fx/--fy are not given.
-    /// Estimated from the rig's measured camera distance; see the README
-    #[arg(long, default_value_t = 72.0)]
-    hfov: f64,
-
-    /// Calibrated focal length along x, in pixels
-    #[arg(long, requires = "fy")]
-    fx: Option<f64>,
-
-    /// Calibrated focal length along y, in pixels
-    #[arg(long, requires = "fx")]
-    fy: Option<f64>,
-
-    /// Principal point x, in pixels [default: image centre]
-    #[arg(long, requires = "cy")]
-    cx: Option<f64>,
-
-    /// Principal point y, in pixels [default: image centre]
-    #[arg(long, requires = "cx")]
-    cy: Option<f64>,
-
     /// Detector threads. Two keep up with 120 fps on the M4 (about 5 ms a
     /// frame) and leave the other cores to the policy
     #[arg(long, default_value_t = 2)]
@@ -133,18 +105,6 @@ struct Args {
     /// Detector decimation
     #[arg(long, default_value_t = 2.0)]
     decimate: f32,
-}
-
-impl Args {
-    fn intrinsics(&self, width: u32, height: u32) -> Intrinsics {
-        let nominal = Intrinsics::from_hfov(width, height, self.hfov);
-        Intrinsics {
-            fx: self.fx.unwrap_or(nominal.fx),
-            fy: self.fy.unwrap_or(nominal.fy),
-            cx: self.cx.unwrap_or(nominal.cx),
-            cy: self.cy.unwrap_or(nominal.cy),
-        }
-    }
 }
 
 /// A frame through detection, on its way to the policy thread.
@@ -302,7 +262,7 @@ fn main() -> Result<()> {
             .name("capture".into())
             .spawn(move || capture_loop(opened, &stop, &slot, &dropped))?
     };
-    let k = args.intrinsics(format.width(), format.height());
+    let k = Intrinsics::from_hfov(format.width(), format.height(), HFOV_DEG);
     eprintln!("camera: {} ({})", cam.name, camera::describe(&format));
 
     let meta: HashMap<String, String> = [
@@ -318,8 +278,8 @@ fn main() -> Result<()> {
             "origin at tag centre, x right, y down, z into the tag".into(),
         ),
         ("tags", "[0, 1, 2]".into()),
-        ("tag_family", args.family.clone()),
-        ("tag_size_m", args.tag_size.to_string()),
+        ("tag_family", TAG_FAMILY.into()),
+        ("tag_size_m", TAG_SIZE_M.to_string()),
         (
             "intrinsics",
             format!("fx={} fy={} cx={} cy={}", k.fx, k.fy, k.cx, k.cy),
@@ -484,8 +444,7 @@ fn detect_loop(
     live: &Live,
     stop: &AtomicBool,
 ) -> Result<DetectStats> {
-    let mut detector =
-        TagDetector::new(&args.family, args.threads, args.decimate, args.tag_size, k)?;
+    let mut detector = TagDetector::new(TAG_FAMILY, args.threads, args.decimate, TAG_SIZE_M, k)?;
     let mut stats = DetectStats::default();
 
     while !stop.load(Ordering::Relaxed) {

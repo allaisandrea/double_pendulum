@@ -43,7 +43,8 @@ fastest and is always in front; tags 0 and 1 can be hidden behind the links
 in front of them. The arm hanging at rest puts tag 2 near the top of the
 image, about 30 px from the edge; the full swing stays inside the frame.
 
-**The tags' black squares are 23 mm** (`--tag-size 0.023`, the default).
+**The tags' black squares are 23 mm** (`TAG_SIZE_M` in `src/constants.rs`,
+along with the tag family and the camera's field of view).
 
 **Light the pendulum from the side, not from behind the camera.** A lamp
 directly behind the camera caused glare that cost detections at every
@@ -77,8 +78,6 @@ that come with these controls.
 | `--camera` | `Arducam` | part of the name, or an index (order is not stable) |
 | `--exposure-us` | `200` | fixed exposure in µs; `0` leaves it automatic |
 | `--gain` | `75` | sensor gain, 0..100 |
-| `--tag-size` | `0.023` | black square's edge in metres, 0.8× the sheet's nominal size |
-| `--hfov` | `72` | horizontal field of view, used when `--fx/--fy` are absent |
 | `--decimate` | `2` | quad search runs on an image this many times smaller |
 | `--duration` | — | stop after this many seconds |
 
@@ -141,7 +140,7 @@ in its metadata (`tag_size_m`, `intrinsics`), so rescale x, y and z by
 `0.023 / tag_size_m`, and z again by `881 / fx`. The in-plane angle is
 unaffected.
 
-**The intrinsics are not calibrated; `--hfov 72` is an estimate.** Depth
+**The intrinsics are not calibrated; `HFOV_DEG` (72) is an estimate.** Depth
 scales with the assumed focal length. At the old default of 60° (fx 1108.5
 px), with the arm at rest and the correct tag size, the tags reported depths
 of 0.745 m (tag 0), 0.725 m (tag 1) and 0.706 m (tag 2), and tag 0
