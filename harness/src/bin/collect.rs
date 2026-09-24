@@ -120,67 +120,17 @@ struct Detected {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let seed = args.seed.unwrap_or_else(rand::random);
-    anyhow::ensure!(
-        args.active_s > 0.0 && args.rest_s >= 0.0 && args.policy_latency_ms >= 0.0,
-        "--active-s must be positive; --rest-s and --policy-latency-ms not negative"
-    );
-    let duty = DutyCycle {
-        active: Duration::from_secs_f64(args.active_s),
-        rest: Duration::from_secs_f64(args.rest_s),
-    };
-    let policy = RandomWalkPolicy {
-        seed,
-        range: args.policy_range as i8,
-        step: args.policy_step,
-        latency: Duration::from_secs_f64(args.policy_latency_ms / 1e3),
-        duty,
-    };
-
-    let out = args.out.clone().unwrap_or_else(|| {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        PathBuf::from(format!("recordings/{secs}"))
-    });
-    std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
-
-    let stop = Arc::new(AtomicBool::new(false));
-    {
-        let stop = stop.clone();
-        // The first Ctrl-C stops cleanly, motor first; a second one bails out
-        // and leaves the board's watchdog to stop the motor.
-        ctrlc::set_handler(move || {
-            if stop.swap(true, Ordering::SeqCst) {
-                std::process::exit(130);
-            }
-        })?;
-    }
+    let policy = make_policy(&args)?;
+    let (seed, duty) = (policy.seed, policy.duty);
+    let out = output_dir(args.out.clone())?;
+    let stop = stop_on_ctrl_c()?;
 
     // The board first: opening its port resets it, and it takes ~1.5 s to
     // come back, which overlaps with the camera starting up below.
-    let port_path = match &args.port {
-        Some(p) => p.clone(),
-        None => serial::find_port()?,
-    };
-    let mut port = serial::open(&port_path)?;
-    serial::send(port.as_mut(), 0)?;
-    eprintln!("arduino: {port_path} ({})", serial::READY);
+    let port = open_board(args.port.clone())?;
 
     let cam = pick_camera(&args.camera)?;
-    let exposure = if args.exposure_us > 0 {
-        let dev = uvc::Device::find(&cam.id).context("finding the camera's UVC device")?;
-        let applied = dev
-            .set_exposure(args.exposure_us, Some(args.gain))
-            .context("setting a fixed exposure")?;
-        eprintln!(
-            "exposure: {} us fixed, gain {}",
-            applied.exposure_us, args.gain
-        );
-        Some((dev, applied))
-    } else {
-        None
-    };
+    let exposure = fix_exposure(&cam.id, args.exposure_us, args.gain)?;
 
     // Every timestamp is recorded relative to t0, before the first frame.
     let t0 = mono();
@@ -332,6 +282,82 @@ fn main() -> Result<()> {
         bail!(why);
     }
     Ok(())
+}
+
+/// The stand-in policy the arguments describe, with its seed chosen if none
+/// was given.
+fn make_policy(args: &Args) -> Result<RandomWalkPolicy> {
+    anyhow::ensure!(
+        args.active_s > 0.0 && args.rest_s >= 0.0 && args.policy_latency_ms >= 0.0,
+        "--active-s must be positive; --rest-s and --policy-latency-ms not negative"
+    );
+    Ok(RandomWalkPolicy {
+        seed: args.seed.unwrap_or_else(rand::random),
+        range: args.policy_range as i8,
+        step: args.policy_step,
+        latency: Duration::from_secs_f64(args.policy_latency_ms / 1e3),
+        duty: DutyCycle {
+            active: Duration::from_secs_f64(args.active_s),
+            rest: Duration::from_secs_f64(args.rest_s),
+        },
+    })
+}
+
+/// `out`, or recordings/<unix time> by default, created if need be.
+fn output_dir(out: Option<PathBuf>) -> Result<PathBuf> {
+    let out = out.unwrap_or_else(|| {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        PathBuf::from(format!("recordings/{secs}"))
+    });
+    std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+    Ok(out)
+}
+
+/// A flag the first Ctrl-C sets, to stop cleanly, motor first; a second one
+/// bails out and leaves the board's watchdog to stop the motor.
+fn stop_on_ctrl_c() -> Result<Arc<AtomicBool>> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    ctrlc::set_handler(move || {
+        if flag.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+    })?;
+    Ok(stop)
+}
+
+/// Opens the Arduino at `port`, or the one found by USB vendor id, and
+/// holds the motor at 0.
+fn open_board(port: Option<String>) -> Result<Box<dyn serialport::SerialPort>> {
+    let path = match port {
+        Some(p) => p,
+        None => serial::find_port()?,
+    };
+    let mut board = serial::open(&path)?;
+    serial::send(board.as_mut(), 0)?;
+    eprintln!("arduino: {path} ({})", serial::READY);
+    Ok(board)
+}
+
+/// Fixes the camera's exposure and gain through UVC, unless `exposure_us`
+/// is 0, which leaves it metering automatically. Returns what it set, to
+/// check afterwards that it held.
+fn fix_exposure(
+    camera_id: &str,
+    exposure_us: u32,
+    gain: u16,
+) -> Result<Option<(uvc::Device, uvc::Applied)>> {
+    if exposure_us == 0 {
+        return Ok(None);
+    }
+    let dev = uvc::Device::find(camera_id).context("finding the camera's UVC device")?;
+    let applied = dev
+        .set_exposure(exposure_us, Some(gain))
+        .context("setting a fixed exposure")?;
+    eprintln!("exposure: {} us fixed, gain {gain}", applied.exposure_us);
+    Ok(Some((dev, applied)))
 }
 
 /// Detects tags in the newest frame, over and over, and passes every result
