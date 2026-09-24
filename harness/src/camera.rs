@@ -1,7 +1,7 @@
 //! Finding, opening and draining a camera.
 
 use crate::clock;
-use crate::mailbox::Latest;
+use crate::latest::Latest;
 use anyhow::{anyhow, Context, Result};
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{

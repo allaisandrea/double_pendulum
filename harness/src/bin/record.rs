@@ -12,7 +12,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::detect::{Intrinsics, Pixels, Tag, Tracker};
-use harness::mailbox::{Latest, Take};
+use harness::latest::{Latest, Take};
 use harness::mov::MovWriter;
 use harness::{overlay, uvc, yuyv};
 use clap::Parser;

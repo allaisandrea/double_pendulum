@@ -18,7 +18,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::clock::mono;
 use harness::detect::{Intrinsics, Pixels, Tracker};
-use harness::mailbox::{Latest, Take};
+use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
 use harness::record::{self, FrameRow, Table, TagRow};
 use harness::{serial, uvc};
