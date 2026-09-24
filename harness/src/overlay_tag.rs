@@ -1,6 +1,6 @@
 //! Draws each detected tag's pose over a frame.
 
-use crate::detect::{Intrinsics, Tag};
+use crate::tag_detector::{Intrinsics, Tag};
 use crate::draw::{self, BLUE, CYAN, GREEN, RED};
 use image::RgbImage;
 
@@ -45,7 +45,7 @@ pub fn draw_tag(img: &mut RgbImage, tag: &Tag, k: &Intrinsics, tag_size: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::{Pixels, Pose, Tracker};
+    use crate::tag_detector::{Pixels, Pose, TagDetector};
     use crate::synthetic_tag_rendering;
 
     /// Draws the overlay on a synthetic frame. Set TAGCAM_DUMP=<path.jpg> to
@@ -60,7 +60,7 @@ mod tests {
             err: 0.0,
         };
         let mut img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
-        let tags = Tracker::new("tag36h11", 2, 2.0, size, k)
+        let tags = TagDetector::new("tag36h11", 2, 2.0, size, k)
             .unwrap()
             .detect(w as usize, h as usize, Pixels::Rgb(img.as_raw()))
             .unwrap();

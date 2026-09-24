@@ -17,7 +17,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::clock::mono;
-use harness::detect::{Intrinsics, Pixels, Tracker};
+use harness::tag_detector::{Intrinsics, Pixels, TagDetector};
 use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
 use harness::record::{self, FrameRow, Table, TagRow};
@@ -459,7 +459,8 @@ fn detect_loop(
     live: &Live,
     stop: &AtomicBool,
 ) -> Result<DetectStats> {
-    let mut tracker = Tracker::new(&args.family, args.threads, args.decimate, args.tag_size, k)?;
+    let mut detector =
+        TagDetector::new(&args.family, args.threads, args.decimate, args.tag_size, k)?;
     let mut stats = DetectStats::default();
 
     while !stop.load(Ordering::Relaxed) {
@@ -477,10 +478,10 @@ fn detect_loop(
         let (w, h) = (res.width() as usize, res.height() as usize);
         let t_detect_start = mono();
         let tags = if is_packed_yuyv(&frame.buf) {
-            tracker.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
+            detector.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
         } else {
             let rgb = frame.buf.decode_image::<RgbFormat>()?;
-            tracker.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
+            detector.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
         };
         let t_detected = mono();
         stats.frames += 1;

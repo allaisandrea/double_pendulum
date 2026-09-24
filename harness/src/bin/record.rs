@@ -11,7 +11,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
-use harness::detect::{Intrinsics, Pixels, Tag, Tracker};
+use harness::tag_detector::{Intrinsics, Pixels, Tag, TagDetector};
 use harness::latest::{Latest, Take};
 use harness::mov::MovWriter;
 use harness::{overlay_tag, uvc, yuyv};
@@ -284,7 +284,7 @@ fn detect_loop(
         "frame,t_s,detect_ms,id,hamming,margin,x_m,y_m,z_m,qw,qx,qy,qz,err,alt_err"
     )?;
 
-    let mut tracker: Option<(Tracker, Intrinsics)> = None;
+    let mut detector: Option<(TagDetector, Intrinsics)> = None;
     let mut stats = Stats::default();
     let mut t_first: Option<Duration> = None;
 
@@ -301,22 +301,22 @@ fn detect_loop(
         let pts = t.saturating_sub(*t_first.get_or_insert(t));
         let res = frame.buf.resolution();
         let (w, h) = (res.width(), res.height());
-        if tracker.is_none() {
+        if detector.is_none() {
             let k = args.intrinsics(w, h);
-            tracker = Some((
-                Tracker::new(&args.family, args.threads, args.decimate, args.tag_size, k)?,
+            detector = Some((
+                TagDetector::new(&args.family, args.threads, args.decimate, args.tag_size, k)?,
                 k,
             ));
         }
-        let (tracker, k) = tracker.as_mut().expect("created above");
+        let (detector, k) = detector.as_mut().expect("created above");
 
         let started = Instant::now();
         let (w, h) = (w as usize, h as usize);
         let tags = if is_packed_yuyv(&frame.buf) {
-            tracker.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
+            detector.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
         } else {
             let rgb = frame.buf.decode_image::<RgbFormat>()?;
-            tracker.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
+            detector.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
         };
         let detect_ms = started.elapsed().as_secs_f64() * 1e3;
         write_csv(&mut csv, frame.seq, pts, detect_ms, &tags)?;

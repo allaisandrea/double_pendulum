@@ -5,7 +5,6 @@
 
 pub mod camera;
 pub mod clock;
-pub mod detect;
 mod draw;
 pub mod latest;
 pub mod mov;
@@ -15,5 +14,6 @@ pub mod record;
 pub mod serial;
 #[cfg(test)]
 mod synthetic_tag_rendering;
+pub mod tag_detector;
 pub mod uvc;
 pub mod yuyv;

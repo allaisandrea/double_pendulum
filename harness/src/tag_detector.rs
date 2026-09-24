@@ -116,7 +116,7 @@ pub struct Tag {
     pub alt_err: Option<f64>,
 }
 
-/// Frame pixels, in the layouts the tracker can take luma from.
+/// Frame pixels, in the layouts the detector can take luma from.
 pub enum Pixels<'a> {
     /// Packed 4:2:2, Y0 U Y1 V: luma is every other byte, so detection
     /// needs no colour conversion at all.
@@ -125,14 +125,14 @@ pub enum Pixels<'a> {
     Rgb(&'a [u8]),
 }
 
-pub struct Tracker {
+pub struct TagDetector {
     detector: Detector,
     /// Reused between frames; apriltag wants its own stride-aligned buffer.
     gray: Option<Image>,
     params: TagParams,
 }
 
-impl Tracker {
+impl TagDetector {
     pub fn new(
         family: &str,
         threads: u8,
@@ -260,7 +260,7 @@ mod tests {
         };
         let img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
 
-        let tags = Tracker::new("tag36h11", 2, 2.0, size, k)
+        let tags = TagDetector::new("tag36h11", 2, 2.0, size, k)
             .unwrap()
             .detect(w as usize, h as usize, Pixels::Rgb(img.as_raw()))
             .unwrap();
@@ -303,10 +303,10 @@ mod tests {
             .flat_map(|p| [p[0], 128, p[3], 128])
             .collect();
 
-        let mut tracker = Tracker::new("tag36h11", 2, 2.0, size, k).unwrap();
+        let mut detector = TagDetector::new("tag36h11", 2, 2.0, size, k).unwrap();
         let (w, h) = (w as usize, h as usize);
-        let from_rgb = tracker.detect(w, h, Pixels::Rgb(img.as_raw())).unwrap();
-        let from_yuyv = tracker.detect(w, h, Pixels::Yuyv(&yuyv)).unwrap();
+        let from_rgb = detector.detect(w, h, Pixels::Rgb(img.as_raw())).unwrap();
+        let from_yuyv = detector.detect(w, h, Pixels::Yuyv(&yuyv)).unwrap();
         assert_eq!(from_rgb.len(), 1);
         assert_eq!(from_yuyv.len(), 1);
         assert_eq!(

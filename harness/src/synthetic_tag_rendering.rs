@@ -1,6 +1,6 @@
 //! Renders a tag at a known pose, for tests.
 
-use crate::detect::{Intrinsics, Pose};
+use crate::tag_detector::{Intrinsics, Pose};
 use image::RgbImage;
 
 /// tag36h11 id 0 as make_apriltag_sheet.py prints it: the 6x6 data bits
