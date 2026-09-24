@@ -14,6 +14,6 @@ pub mod policy;
 pub mod record;
 pub mod serial;
 #[cfg(test)]
-mod synthetic;
+mod synthetic_tag_rendering;
 pub mod uvc;
 pub mod yuyv;

@@ -235,7 +235,7 @@ const POSE_ITERATIONS: usize = 50;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthetic;
+    use crate::synthetic_tag_rendering;
 
     fn angle_deg(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> f64 {
         // trace(a^T b) = 1 + 2 cos(angle)
@@ -254,11 +254,11 @@ mod tests {
         let (w, h, size) = (1280, 720, 0.04);
         let k = Intrinsics::from_hfov(w, h, 60.0);
         let truth = Pose {
-            r: synthetic::rotation(25.0, -20.0, 10.0),
+            r: synthetic_tag_rendering::rotation(25.0, -20.0, 10.0),
             t: [0.03, -0.02, 0.35],
             err: 0.0,
         };
-        let img = synthetic::render(w, h, &k, &truth, size);
+        let img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
 
         let tags = Tracker::new("tag36h11", 2, 2.0, size, k)
             .unwrap()
@@ -290,11 +290,11 @@ mod tests {
         let (w, h, size) = (1280u32, 720u32, 0.04);
         let k = Intrinsics::from_hfov(w, h, 60.0);
         let truth = Pose {
-            r: synthetic::rotation(-15.0, 30.0, -5.0),
+            r: synthetic_tag_rendering::rotation(-15.0, 30.0, -5.0),
             t: [-0.05, 0.01, 0.4],
             err: 0.0,
         };
-        let img = synthetic::render(w, h, &k, &truth, size);
+        let img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
         let yuyv: Vec<u8> = img
             .as_raw()
             .as_chunks::<6>()
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn quaternion_of_a_quarter_turn_about_z() {
         let pose = Pose {
-            r: synthetic::rotation(0.0, 0.0, 90.0),
+            r: synthetic_tag_rendering::rotation(0.0, 0.0, 90.0),
             t: [0.0; 3],
             err: 0.0,
         };

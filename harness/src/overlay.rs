@@ -46,7 +46,7 @@ pub fn draw_tag(img: &mut RgbImage, tag: &Tag, k: &Intrinsics, tag_size: f64) {
 mod tests {
     use super::*;
     use crate::detect::{Pixels, Pose, Tracker};
-    use crate::synthetic;
+    use crate::synthetic_tag_rendering;
 
     /// Draws the overlay on a synthetic frame. Set TAGCAM_DUMP=<path.jpg> to
     /// write the result out for a visual check.
@@ -55,11 +55,11 @@ mod tests {
         let (w, h, size) = (1280, 720, 0.04);
         let k = Intrinsics::from_hfov(w, h, 60.0);
         let truth = Pose {
-            r: synthetic::rotation(25.0, -20.0, 10.0),
+            r: synthetic_tag_rendering::rotation(25.0, -20.0, 10.0),
             t: [0.03, -0.02, 0.35],
             err: 0.0,
         };
-        let mut img = synthetic::render(w, h, &k, &truth, size);
+        let mut img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
         let tags = Tracker::new("tag36h11", 2, 2.0, size, k)
             .unwrap()
             .detect(w as usize, h as usize, Pixels::Rgb(img.as_raw()))
