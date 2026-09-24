@@ -118,72 +118,6 @@ struct Detected {
     tags: [Option<TagRow>; 3],
 }
 
-/// Counters the threads bump as they go, read by the periodic status line.
-struct Live {
-    frames: AtomicU64,
-    /// Frames tags 0, 1 and 2 were each seen in.
-    tags: [AtomicU64; 3],
-    acted: AtomicU64,
-    skipped: AtomicU64,
-    /// Slowest detection and slowest capture-to-send since the last status
-    /// line, in microseconds; the status line resets them.
-    slowest_detect_us: AtomicU64,
-    slowest_send_us: AtomicU64,
-}
-
-impl Live {
-    fn new() -> Self {
-        Self {
-            frames: AtomicU64::new(0),
-            tags: std::array::from_fn(|_| AtomicU64::new(0)),
-            acted: AtomicU64::new(0),
-            skipped: AtomicU64::new(0),
-            slowest_detect_us: AtomicU64::new(0),
-            slowest_send_us: AtomicU64::new(0),
-        }
-    }
-
-    fn snapshot(&self) -> Counts {
-        let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
-        Counts {
-            frames: get(&self.frames),
-            tags: self.tags.each_ref().map(get),
-            acted: get(&self.acted),
-            skipped: get(&self.skipped),
-        }
-    }
-}
-
-#[derive(Default)]
-struct Counts {
-    frames: u64,
-    tags: [u64; 3],
-    acted: u64,
-    skipped: u64,
-}
-
-/// One line covering the interval since `prev`.
-fn status_line(live: &Live, prev: &Counts, now: &Counts, elapsed: Duration, phase: &str) -> String {
-    let frames = now.frames - prev.frames;
-    let tags: Vec<String> = now
-        .tags
-        .iter()
-        .zip(&prev.tags)
-        .map(|(n, p)| format!("{:.0}", 100.0 * (n - p) as f64 / frames.max(1) as f64))
-        .collect();
-    let ms = |a: &AtomicU64| a.swap(0, Ordering::Relaxed) as f64 / 1e3;
-    format!(
-        "[{:5.0} s]{phase} {frames} frames, tags {}% | {} actions, {} frames skipped | \
-         slowest detection {:.0} ms, slowest capture to send {:.0} ms",
-        elapsed.as_secs_f64(),
-        tags.join("/"),
-        now.acted - prev.acted,
-        now.skipped - prev.skipped,
-        ms(&live.slowest_detect_us),
-        ms(&live.slowest_send_us),
-    )
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
     let seed = args.seed.unwrap_or_else(rand::random);
@@ -307,11 +241,10 @@ fn main() -> Result<()> {
 
     let frames = Table::create(&out.join("frames.arrows"), meta)?;
     let (row_tx, row_rx) = mpsc::channel::<FrameRow>();
+    let status_every = Duration::from_secs_f64(args.status_every_s.max(0.0));
     let logger = thread::Builder::new()
         .name("logger".into())
-        .spawn(move || log_loop(row_rx, frames))?;
-
-    let live = Arc::new(Live::new());
+        .spawn(move || log_loop(row_rx, frames, duty, status_every))?;
 
     let reset = Arc::new(AtomicBool::new(false));
     let heard = Arc::new(Mutex::new(Vec::new()));
@@ -325,17 +258,17 @@ fn main() -> Result<()> {
 
     let (det_tx, det_rx) = mpsc::channel::<Detected>();
     let detect = {
-        let (args, stop, live) = (args.clone(), stop.clone(), live.clone());
+        let (args, stop) = (args.clone(), stop.clone());
         thread::Builder::new()
             .name("detect".into())
-            .spawn(move || detect_loop(&args, k, &slot, det_tx, &live, &stop))?
+            .spawn(move || detect_loop(&args, k, &slot, det_tx, &stop))?
     };
 
     let act = {
-        let (stop, live) = (stop.clone(), live.clone());
+        let stop = stop.clone();
         thread::Builder::new()
             .name("policy".into())
-            .spawn(move || policy_loop(Box::new(policy), det_rx, port, t0, row_tx, &live, &stop))?
+            .spawn(move || policy_loop(Box::new(policy), det_rx, port, t0, row_tx, &stop))?
     };
 
     let cycle = if duty.rest.is_zero() {
@@ -351,24 +284,7 @@ fn main() -> Result<()> {
     );
     let started = Instant::now();
     let mut abort = None;
-    let status_every = Duration::from_secs_f64(args.status_every_s.max(0.0));
-    let mut next_status = started + status_every;
-    let mut prev = Counts::default();
     while !stop.load(Ordering::Relaxed) {
-        if !status_every.is_zero() && Instant::now() >= next_status {
-            let now = live.snapshot();
-            let phase = match duty.rest.is_zero() {
-                true => "",
-                false if duty.resting(mono() - t0) => " resting |",
-                false => " active  |",
-            };
-            eprintln!(
-                "{}",
-                status_line(&live, &prev, &now, started.elapsed(), phase)
-            );
-            prev = now;
-            next_status += status_every;
-        }
         if args
             .duration
             .is_some_and(|d| started.elapsed().as_secs_f64() >= d)
@@ -396,23 +312,17 @@ fn main() -> Result<()> {
     let detected = detect
         .join()
         .map_err(|_| anyhow!("detect thread panicked"))?;
-    let logged = logger.join().map_err(|_| anyhow!("logger panicked"))?;
+    let stats = logger.join().map_err(|_| anyhow!("logger panicked"))?;
     let _ = watcher.join();
     let deadline = Instant::now() + Duration::from_secs(1);
     while !capture.is_finished() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
 
-    let acted = acted.context("policy")?;
-    let detected = detected.context("detection")?;
-    let n_rows = logged.context("writing the recording")?;
-    report(
-        &detected,
-        &acted,
-        dropped.load(Ordering::Relaxed),
-        n_rows,
-        &out,
-    );
+    acted.context("policy")?;
+    detected.context("detection")?;
+    let stats = stats.context("writing the recording")?;
+    stats.report(dropped.load(Ordering::Relaxed), &out);
     if let Some((dev, applied)) = &exposure {
         if let Some(what) = dev.drift(applied) {
             eprintln!("warning: exposure did not hold during this recording: {what}");
@@ -424,16 +334,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-#[derive(Default)]
-struct DetectStats {
-    frames: u64,
-    /// Frames tags 0, 1 and 2 were each seen in.
-    with_tag: [u64; 3],
-    detect_ms: Vec<f64>,
-    /// How old each frame was when it arrived: arrival minus capture.
-    age_ms: Vec<f64>,
-}
-
 /// Detects tags in the newest frame, over and over, and passes every result
 /// to the policy thread.
 fn detect_loop(
@@ -441,12 +341,9 @@ fn detect_loop(
     k: Intrinsics,
     slot: &Latest<Frame>,
     to_policy: Sender<Detected>,
-    live: &Live,
     stop: &AtomicBool,
-) -> Result<DetectStats> {
+) -> Result<()> {
     let mut detector = TagDetector::new(TAG_FAMILY, args.threads, args.decimate, TAG_SIZE_M, k)?;
-    let mut stats = DetectStats::default();
-
     while !stop.load(Ordering::Relaxed) {
         let frame = match slot.take(Duration::from_millis(100)) {
             Take::Item(frame) => frame,
@@ -456,30 +353,16 @@ fn detect_loop(
         let t_capture = frame
             .t_capture
             .ok_or_else(|| anyhow!("frame {} has no capture timestamp", frame.seq))?;
-        stats
-            .age_ms
-            .push((frame.t_arrival.as_secs_f64() - t_capture.as_secs_f64()) * 1e3);
 
         let res = frame.buf.resolution();
         let (w, h) = (res.width() as usize, res.height() as usize);
         let t_detect_start = mono();
         let tags = detector.detect(w, h, frame.buf.buffer())?;
         let t_detected = mono();
-        stats.frames += 1;
-        stats
-            .detect_ms
-            .push((t_detected - t_detect_start).as_secs_f64() * 1e3);
-        live.frames.fetch_add(1, Ordering::Relaxed);
-        live.slowest_detect_us.fetch_max(
-            (t_detected - t_detect_start).as_micros() as u64,
-            Ordering::Relaxed,
-        );
 
         let tag_rows: [Option<TagRow>; 3] = std::array::from_fn(|id| {
             let tag = tags.iter().find(|t| t.id == id)?;
             let pose = tag.pose.as_ref()?;
-            stats.with_tag[id] += 1;
-            live.tags[id].fetch_add(1, Ordering::Relaxed);
             Some(TagRow {
                 pose: table::pose_row(pose.t, pose.quaternion()),
                 err: pose.err as f32,
@@ -500,19 +383,7 @@ fn detect_loop(
             break; // the policy thread has stopped
         }
     }
-    Ok(stats)
-}
-
-#[derive(Default)]
-struct PolicyStats {
-    acted: u64,
-    skipped: u64,
-    /// Detection done to policy start: time spent queued.
-    wait_ms: Vec<f64>,
-    /// Policy start to action ready.
-    policy_ms: Vec<f64>,
-    /// Capture to the action written: the command delay.
-    delay_ms: Vec<f64>,
+    Ok(())
 }
 
 /// Takes every detection that has arrived, acts on the newest, and sends
@@ -524,13 +395,10 @@ fn policy_loop(
     mut port: Box<dyn serialport::SerialPort>,
     t0: Duration,
     rows: Sender<FrameRow>,
-    live: &Live,
     stop: &AtomicBool,
-) -> Result<PolicyStats> {
+) -> Result<()> {
     raise_priority();
-    let mut stats = PolicyStats::default();
     let ns = |t: Duration| table::rel_ns(t, t0);
-    let ms = |a: Duration, b: Duration| (b.as_secs_f64() - a.as_secs_f64()) * 1e3;
     let step = |d: &Detected, action: Option<i8>| Step {
         frame: d.frame,
         t: d.t_capture.saturating_sub(t0),
@@ -572,8 +440,6 @@ fn policy_loop(
             waiting.extend(from_detect.try_iter());
             let newest = waiting.pop().expect("at least the first");
             for d in waiting {
-                stats.skipped += 1;
-                live.skipped.fetch_add(1, Ordering::Relaxed);
                 remember(&mut history, step(&d, Some(current)));
                 let _ = rows.send(row(d, current, None));
             }
@@ -597,16 +463,6 @@ fn policy_loop(
             serial::send(port.as_mut(), action)?;
             let t_sent = mono();
             current = action;
-
-            stats.acted += 1;
-            stats.wait_ms.push(ms(newest.t_detected, t_policy_start));
-            stats.policy_ms.push(ms(t_policy_start, t_policy_done));
-            stats.delay_ms.push(ms(newest.t_capture, t_sent));
-            live.acted.fetch_add(1, Ordering::Relaxed);
-            live.slowest_send_us.fetch_max(
-                t_sent.saturating_sub(newest.t_capture).as_micros() as u64,
-                Ordering::Relaxed,
-            );
             remember(&mut history, step(&newest, Some(action)));
             let _ = rows.send(row(
                 newest,
@@ -618,8 +474,7 @@ fn policy_loop(
     })();
     // Stop the motor whatever happened above.
     let zeroed = serial::send(port.as_mut(), 0).and_then(|_| Ok(port.flush()?));
-    result.and(zeroed)?;
-    Ok(stats)
+    result.and(zeroed)
 }
 
 /// Runs the calling thread at the highest ordinary priority, so the policy
@@ -635,21 +490,153 @@ fn raise_priority() {
 }
 
 /// Writes the frames table, a batch about once a second, until the policy
-/// thread hangs up.
-fn log_loop(rx: Receiver<FrameRow>, mut frames: Table) -> Result<u64> {
-    let mut next_flush = Instant::now() + Duration::from_secs(1);
+/// thread hangs up. Also keeps the run's statistics, from the same rows it
+/// writes: a status line every `status_every` (zero prints none), and the
+/// totals, returned at the end.
+fn log_loop(
+    rx: Receiver<FrameRow>,
+    mut frames: Table,
+    duty: DutyCycle,
+    status_every: Duration,
+) -> Result<Stats> {
+    let started = Instant::now();
+    let (mut total, mut interval) = (Stats::default(), Stats::default());
+    let mut next_flush = started + Duration::from_secs(1);
+    let mut next_status = started + status_every;
     loop {
-        match rx.recv_timeout(next_flush.saturating_duration_since(Instant::now())) {
-            Ok(r) => frames.push(r),
+        let wake = match status_every.is_zero() {
+            true => next_flush,
+            false => next_flush.min(next_status),
+        };
+        match rx.recv_timeout(wake.saturating_duration_since(Instant::now())) {
+            Ok(r) => {
+                // The first rows only fill the policy's history; after them,
+                // a row not acted on was skipped while the policy was busy.
+                let startup = total.frames < HISTORY_LENGTH as u64 - 1;
+                total.add(&r, startup);
+                interval.add(&r, startup);
+                frames.push(r);
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        if Instant::now() >= next_flush {
+        let now = Instant::now();
+        if now >= next_flush {
             frames.flush()?;
             next_flush += Duration::from_secs(1);
         }
+        if !status_every.is_zero() && now >= next_status {
+            eprintln!("{}", interval.status_line(started.elapsed(), duty));
+            interval = Stats::default();
+            next_status += status_every;
+        }
     }
-    frames.finish()
+    frames.finish()?;
+    Ok(total)
+}
+
+/// An account of frame rows: of a whole run, or of one status interval.
+#[derive(Default)]
+struct Stats {
+    frames: u64,
+    /// Frames tags 0, 1 and 2 were each seen in.
+    with_tag: [u64; 3],
+    acted: u64,
+    /// Frames not acted on because the policy was busy, not counting the
+    /// startup frames that only fill its history.
+    skipped: u64,
+    /// Capture time of the latest row, since t0, in nanoseconds.
+    last_capture: Option<i64>,
+    /// Milliseconds: capture to arrival, detection, queued between detection
+    /// and policy, inference, and capture to the action written.
+    age_ms: Vec<f64>,
+    detect_ms: Vec<f64>,
+    wait_ms: Vec<f64>,
+    policy_ms: Vec<f64>,
+    delay_ms: Vec<f64>,
+}
+
+impl Stats {
+    fn add(&mut self, r: &FrameRow, startup: bool) {
+        let ms = |a: i64, b: i64| (b - a) as f64 / 1e6;
+        self.frames += 1;
+        for (n, tag) in self.with_tag.iter_mut().zip(&r.tags) {
+            *n += u64::from(tag.is_some());
+        }
+        self.last_capture = Some(r.t_capture);
+        self.age_ms.push(ms(r.t_capture, r.t_arrival));
+        self.detect_ms.push(ms(r.t_detect_start, r.t_detected));
+        match (r.t_policy_start, r.t_policy_done, r.t_sent) {
+            (Some(start), Some(done), Some(sent)) => {
+                self.acted += 1;
+                self.wait_ms.push(ms(r.t_detected, start));
+                self.policy_ms.push(ms(start, done));
+                self.delay_ms.push(ms(r.t_capture, sent));
+            }
+            _ if !startup => self.skipped += 1,
+            _ => {}
+        }
+    }
+
+    /// One line on this interval, `elapsed` into the run.
+    fn status_line(&self, elapsed: Duration, duty: DutyCycle) -> String {
+        let phase = match self.last_capture {
+            _ if duty.rest.is_zero() => "",
+            Some(t) if duty.resting(Duration::from_nanos(t.max(0) as u64)) => " resting |",
+            Some(_) => " active  |",
+            None => "",
+        };
+        let tags: Vec<String> = self
+            .with_tag
+            .iter()
+            .map(|n| format!("{:.0}", 100.0 * *n as f64 / self.frames.max(1) as f64))
+            .collect();
+        let max = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
+        format!(
+            "[{:5.0} s]{phase} {} frames, tags {}% | {} actions, {} frames skipped | \
+             slowest detection {:.0} ms, slowest capture to send {:.0} ms",
+            elapsed.as_secs_f64(),
+            self.frames,
+            tags.join("/"),
+            self.acted,
+            self.skipped,
+            max(&self.detect_ms),
+            max(&self.delay_ms),
+        )
+    }
+
+    /// The summary printed at the end of a run.
+    fn report(&self, dropped: u64, out: &std::path::Path) {
+        eprintln!("\nwrote {} frames to {}", self.frames, out.display());
+        eprintln!("frames: {dropped} camera frames dropped before detection");
+        for (id, n) in self.with_tag.iter().enumerate() {
+            eprintln!(
+                "  tag {id}: in {n} frames ({:.1}%)",
+                100.0 * *n as f64 / self.frames.max(1) as f64
+            );
+        }
+        eprintln!(
+            "  frame age on arrival (clock check): {}",
+            quantiles(&mut self.age_ms.clone())
+        );
+        eprintln!("  detection: {}", quantiles(&mut self.detect_ms.clone()));
+        eprintln!(
+            "policy: acted on {} frames after the first {}, skipped {} ({:.1}%) while busy",
+            self.acted,
+            HISTORY_LENGTH - 1,
+            self.skipped,
+            100.0 * self.skipped as f64 / (self.acted + self.skipped).max(1) as f64
+        );
+        eprintln!(
+            "  queued after detection: {}",
+            quantiles(&mut self.wait_ms.clone())
+        );
+        eprintln!("  inference: {}", quantiles(&mut self.policy_ms.clone()));
+        eprintln!(
+            "  capture to send: {}",
+            quantiles(&mut self.delay_ms.clone())
+        );
+    }
 }
 
 fn quantiles(v: &mut [f64]) -> String {
@@ -665,39 +652,4 @@ fn quantiles(v: &mut [f64]) -> String {
         q(0.95),
         q(1.0)
     )
-}
-
-fn report(det: &DetectStats, pol: &PolicyStats, dropped: u64, n_rows: u64, out: &std::path::Path) {
-    eprintln!("\nwrote {n_rows} frames to {}", out.display());
-    eprintln!(
-        "frames: {} detected, {} camera frames dropped before detection",
-        det.frames, dropped
-    );
-    for (id, n) in det.with_tag.iter().enumerate() {
-        eprintln!(
-            "  tag {id}: in {n} frames ({:.1}%)",
-            100.0 * *n as f64 / det.frames.max(1) as f64
-        );
-    }
-    eprintln!(
-        "  frame age on arrival (clock check): {}",
-        quantiles(&mut det.age_ms.clone())
-    );
-    eprintln!("  detection: {}", quantiles(&mut det.detect_ms.clone()));
-    eprintln!(
-        "policy: acted on {} frames after the first {}, skipped {} ({:.1}%) while busy",
-        pol.acted,
-        HISTORY_LENGTH - 1,
-        pol.skipped,
-        100.0 * pol.skipped as f64 / (pol.acted + pol.skipped).max(1) as f64
-    );
-    eprintln!(
-        "  queued after detection: {}",
-        quantiles(&mut pol.wait_ms.clone())
-    );
-    eprintln!("  inference: {}", quantiles(&mut pol.policy_ms.clone()));
-    eprintln!(
-        "  capture to send: {}",
-        quantiles(&mut pol.delay_ms.clone())
-    );
 }

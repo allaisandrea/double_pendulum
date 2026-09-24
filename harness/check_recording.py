@@ -106,7 +106,7 @@ def main():
         problems.append(f"{first} frames before the first one acted on, not {warmup}")
     busy = n - n_acted - min(first, warmup)
     print(f"{run}: {n} frames, policy acted on {n_acted}; the first {warmup} filled its history, "
-          f"{busy} ({100 * busy / max(n, 1):.1f}%) were skipped while it was busy")
+          f"{busy} ({100 * busy / max(n - min(first, warmup), 1):.1f}%) were skipped while it was busy")
     print(f"  camera frames that never reached detection: {never_detected}")
     print(f"  capture to send: {quantiles(delay)}")
     if problems:
