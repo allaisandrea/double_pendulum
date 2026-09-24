@@ -161,7 +161,6 @@ fn main() -> Result<()> {
 
     let slot = Arc::new(Latest::new());
     let (enc_tx, enc_rx) = mpsc::sync_channel(2);
-    let (ready_tx, ready_rx) = mpsc::channel();
 
     let camera = pick_camera(&args.camera)?;
 
@@ -186,17 +185,14 @@ fn main() -> Result<()> {
         None
     };
 
+    let opened = camera::open(&camera.id)?;
+    let format = camera::describe(&opened.camera_format());
     let capture = {
-        let (stop, dropped, id, slot) =
-            (stop.clone(), dropped.clone(), camera.id.clone(), slot.clone());
+        let (stop, dropped, slot) = (stop.clone(), dropped.clone(), slot.clone());
         thread::Builder::new()
             .name("capture".into())
-            .spawn(move || capture_loop(&id, &stop, &slot, &dropped, ready_tx))?
+            .spawn(move || capture_loop(opened, &stop, &slot, &dropped))?
     };
-    let format = ready_rx
-        .recv()
-        .map_err(|_| anyhow!("capture thread exited"))??;
-    let format = camera::describe(&format);
     eprintln!("camera {} ({}): {format}", camera.index, camera.name);
 
     let process = {

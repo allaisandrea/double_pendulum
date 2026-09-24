@@ -2,14 +2,13 @@
 
 use crate::clock;
 use crate::mailbox::Latest;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{
     ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
 };
 use nokhwa::{Buffer, Camera};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 /// A camera chosen with --camera.
@@ -77,30 +76,33 @@ pub fn describe(f: &CameraFormat) -> String {
     format!("{}x{} {:?} @ {} fps", f.width(), f.height(), f.format(), f.frame_rate())
 }
 
+/// Opens the camera with the given AVFoundation unique id, [`Picked::id`],
+/// at its highest resolution, and starts it streaming. Frames queue up from
+/// here on, so hand the camera to [`capture_loop`] soon after.
+pub fn open(camera_id: &str) -> Result<Camera> {
+    let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+    let mut cam = Camera::new(CameraIndex::String(camera_id.to_string()), format)
+        .with_context(|| format!("opening camera {camera_id}"))?;
+    cam.open_stream().with_context(|| format!("starting camera {camera_id}"))?;
+    Ok(cam)
+}
+
 /// Drains the camera continuously. nokhwa hands out the oldest queued frame
 /// and discards the rest, so reading slowly would mean reading stale frames.
 /// Each frame replaces the one waiting in `slot`, so the consumer always gets
 /// the newest; frames replaced before anyone took them are counted as dropped.
-/// The slot is closed when capture stops.
+/// Stops the stream and closes the slot when capture ends.
+///
+/// - `cam`: an open camera, from [`open`].
+/// - `stop`: set by the caller to end capture; checked between frames.
+/// - `slot`: where each frame goes, replacing any frame not yet taken.
+/// - `dropped`: counts the frames replaced before anyone took them.
 pub fn capture_loop(
-    id: &str,
+    mut cam: Camera,
     stop: &AtomicBool,
     slot: &Latest<Frame>,
     dropped: &AtomicU64,
-    ready: Sender<Result<CameraFormat>>,
 ) -> Result<()> {
-    let mut cam = match open_camera(id) {
-        Ok(cam) => {
-            let _ = ready.send(Ok(cam.camera_format()));
-            cam
-        }
-        Err(e) => {
-            slot.close();
-            let _ = ready.send(Err(e.context(format!("opening camera {id}"))));
-            return Ok(());
-        }
-    };
-
     let mut seq = 0;
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Relaxed) {
@@ -123,11 +125,4 @@ pub fn capture_loop(
     let _ = cam.stop_stream();
     slot.close();
     result
-}
-
-fn open_camera(id: &str) -> Result<Camera> {
-    let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
-    let mut cam = Camera::new(CameraIndex::String(id.to_string()), format)?;
-    cam.open_stream()?;
-    Ok(cam)
 }

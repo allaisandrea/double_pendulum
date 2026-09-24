@@ -293,15 +293,14 @@ fn main() -> Result<()> {
 
     let dropped = Arc::new(AtomicU64::new(0));
     let slot = Arc::new(Latest::new());
-    let (ready_tx, ready_rx) = mpsc::channel();
+    let opened = camera::open(&cam.id)?;
+    let format = opened.camera_format();
     let capture = {
-        let (stop, dropped, id, slot) =
-            (stop.clone(), dropped.clone(), cam.id.clone(), slot.clone());
+        let (stop, dropped, slot) = (stop.clone(), dropped.clone(), slot.clone());
         thread::Builder::new()
             .name("capture".into())
-            .spawn(move || capture_loop(&id, &stop, &slot, &dropped, ready_tx))?
+            .spawn(move || capture_loop(opened, &stop, &slot, &dropped))?
     };
-    let format = ready_rx.recv().map_err(|_| anyhow!("capture thread exited"))??;
     let k = args.intrinsics(format.width(), format.height());
     eprintln!("camera: {} ({})", cam.name, camera::describe(&format));
 

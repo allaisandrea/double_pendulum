@@ -15,7 +15,9 @@ image = { version = "0.25", default-features = false }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 libc = "0.2"
 mach2 = "0.4"
-nokhwa = { version = "0.10", features = ["input-native"] }
+# camera-sync-impl makes Camera Send, so it can be opened on the main thread
+# and handed to the capture thread; nokhwa's own threaded camera relies on it.
+nokhwa = { version = "0.10", features = ["input-native", "camera-sync-impl"] }
 rand = "0.10.3"
 serialport = "4.10.1"
 
