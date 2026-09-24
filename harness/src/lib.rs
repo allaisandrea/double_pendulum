@@ -10,10 +10,10 @@ pub mod latest;
 pub mod mov;
 pub mod overlay_tag;
 pub mod policy;
-pub mod record;
 pub mod serial;
 #[cfg(test)]
 mod synthetic_tag_rendering;
+pub mod table;
 pub mod tag_detector;
 pub mod uvc;
 pub mod yuyv;

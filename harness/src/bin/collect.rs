@@ -20,7 +20,7 @@ use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::clock::mono;
 use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
-use harness::record::{self, FrameRow, Table, TagRow};
+use harness::table::{self, FrameRow, Table, TagRow};
 use harness::tag_detector::{Intrinsics, Pixels, TagDetector};
 use harness::{serial, uvc};
 use nokhwa::pixel_format::RgbFormat;
@@ -537,7 +537,7 @@ fn detect_loop(
                 *stats.with_tag.entry(id).or_default() += 1;
                 live.tags[i].fetch_add(1, Ordering::Relaxed);
                 Some(TagRow {
-                    pose: record::pose_row(pose.t, pose.quaternion()),
+                    pose: table::pose_row(pose.t, pose.quaternion()),
                     err: pose.err as f32,
                     alt_err: tag.alt_err.map(|e| e as f32),
                     margin: tag.margin,
@@ -586,7 +586,7 @@ fn policy_loop(
 ) -> Result<PolicyStats> {
     raise_priority();
     let mut stats = PolicyStats::default();
-    let ns = |t: Duration| record::rel_ns(t, t0);
+    let ns = |t: Duration| table::rel_ns(t, t0);
     let ms = |a: Duration, b: Duration| (b.as_secs_f64() - a.as_secs_f64()) * 1e3;
     let step = |d: &Detected, action: Option<i8>| Step {
         frame: d.frame,
