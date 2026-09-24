@@ -10,12 +10,16 @@ Exits non-zero if anything is inconsistent. Checks, on frames.arrows:
   - frame numbers increase, and each row's times are in pipeline order:
     capture, arrival, detection start and end, then, for frames the policy
     acted on, policy start, policy done and send;
-  - frames the policy skipped have no policy times, and carry the action of
-    the last frame it acted on;
+  - frames the policy did not act on have no policy times, and carry the
+    action of the last frame it acted on;
+  - exactly history - 1 frames come before the first one acted on, history
+    being the number of frames the policy sees (in the metadata): the
+    earlier ones only fill its history;
   - with the stand-in random walk: every action is within the policy range,
     consecutive actions differ by at most the step, and actions decided in a
     rest period are 0.
-Reports camera frames that never reached detection, skipped frames, and
+Reports camera frames that never reached detection, frames skipped while the
+policy was busy, and
 the delay from capture to send.
 """
 import sys
@@ -96,8 +100,13 @@ def main():
         delay.append((times["t_sent"][i] - times["t_capture"][i]) / 1e6)
 
     n, n_acted = len(seq), sum(acted)
-    print(f"{run}: {n} frames, policy acted on {n_acted}, skipped {n - n_acted} "
-          f"({100 * (n - n_acted) / max(n, 1):.1f}%)")
+    warmup = int(meta["history"]) - 1
+    first = acted.index(True) if n_acted else n
+    if n_acted and first != warmup:
+        problems.append(f"{first} frames before the first one acted on, not {warmup}")
+    busy = n - n_acted - min(first, warmup)
+    print(f"{run}: {n} frames, policy acted on {n_acted}; the first {warmup} filled its history, "
+          f"{busy} ({100 * busy / max(n, 1):.1f}%) were skipped while it was busy")
     print(f"  camera frames that never reached detection: {never_detected}")
     print(f"  capture to send: {quantiles(delay)}")
     if problems:

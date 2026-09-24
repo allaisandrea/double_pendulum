@@ -198,9 +198,12 @@ firmware's watchdog zeroes it, 300 ms after the last byte. When `collect`
 stops, the policy thread sends a final zero.
 
 **The policy** is anything implementing `Policy` in `src/policy.rs`. It gets
-the current frame and the two before it, newest first: each frame's number,
-capture time since t0, one pose per tag (none when unseen), and the action
-in effect after it (none for the current frame). It returns one action.
+exactly `HISTORY_LENGTH` (3) frames, newest first: the current frame and the
+ones before it, each with its number, capture time since t0, the poses of
+tags 0, 1 and 2 (none when unseen), and the action in effect after it (none
+for the current frame). It returns one action. It is first called once a
+recording has that many frames; the earlier ones only fill its history, and
+the motor stays at 0. The length is recorded as `history` in the metadata.
 
 **The stand-in policy** is a random walk: each frame the action moves by a
 step drawn uniformly from ±`--policy-step` (10), reflecting at

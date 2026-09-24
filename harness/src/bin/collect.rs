@@ -19,7 +19,7 @@ use clap::Parser;
 use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::clock::mono;
 use harness::latest::{Latest, Take};
-use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
+use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY_LENGTH};
 use harness::table::{self, FrameRow, Table, TagRow};
 use harness::tag_detector::{Intrinsics, TagDetector};
 use harness::{serial, uvc};
@@ -331,7 +331,7 @@ fn main() -> Result<()> {
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
-        ("history", HISTORY.to_string()),
+        ("history", HISTORY_LENGTH.to_string()),
         ("policy", policy.describe()),
         ("policy_range", args.policy_range.to_string()),
         ("policy_step", args.policy_step.to_string()),
@@ -591,10 +591,11 @@ fn policy_loop(
         t_sent: times.map(|t| ns(t[2])),
         action,
     };
-    // Earlier frames, oldest first, each with the action in effect after it.
-    let mut history: VecDeque<Step> = VecDeque::with_capacity(HISTORY);
+    // The frames before the newest, oldest first, each with the action in
+    // effect after it.
+    let mut history: VecDeque<Step> = VecDeque::with_capacity(HISTORY_LENGTH);
     let remember = |history: &mut VecDeque<Step>, s: Step| {
-        if history.len() == HISTORY - 1 {
+        if history.len() == HISTORY_LENGTH - 1 {
             history.pop_front();
         }
         history.push_back(s);
@@ -618,10 +619,20 @@ fn policy_loop(
                 let _ = rows.send(row(d, current, None));
             }
 
+            if history.len() < HISTORY_LENGTH - 1 {
+                // The start of the recording: this frame only fills the
+                // history, and the startup 0 stays in effect.
+                remember(&mut history, step(&newest, Some(current)));
+                let _ = rows.send(row(newest, current, None));
+                continue;
+            }
+
             let t_policy_start = mono();
-            let input: Vec<Step> = std::iter::once(step(&newest, None))
-                .chain(history.iter().rev().cloned())
-                .collect();
+            // Newest first: this frame, then the history from its end.
+            let input: [Step; HISTORY_LENGTH] = std::array::from_fn(|i| match i {
+                0 => step(&newest, None),
+                _ => history[history.len() - i].clone(),
+            });
             let action = policy.act(&input);
             let t_policy_done = mono();
             serial::send(port.as_mut(), action)?;
@@ -715,8 +726,9 @@ fn report(det: &DetectStats, pol: &PolicyStats, dropped: u64, n_rows: u64, out: 
     );
     eprintln!("  detection: {}", quantiles(&mut det.detect_ms.clone()));
     eprintln!(
-        "policy: acted on {} frames, skipped {} ({:.1}%) while busy",
+        "policy: acted on {} frames after the first {}, skipped {} ({:.1}%) while busy",
         pol.acted,
+        HISTORY_LENGTH - 1,
         pol.skipped,
         100.0 * pol.skipped as f64 / (pol.acted + pol.skipped).max(1) as f64
     );

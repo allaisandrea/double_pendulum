@@ -1,14 +1,16 @@
 //! The policy interface `collect` drives the motor through, and a stand-in.
 //!
-//! A policy sees the newest detected frame and the ones before it, and
-//! returns one action, which is sent to the motor at once. It is called on
-//! the newest frame only; frames that arrived while it was busy still appear
-//! in the history it gets next time, with the action that was in effect.
+//! A policy sees the newest detected frame and the ones before it,
+//! [`HISTORY_LENGTH`] in all, and returns one action, which is sent to the
+//! motor at once. It is called on the newest frame only; frames that arrived
+//! while it was busy still appear in the history it gets next time, with the
+//! action that was in effect. It is first called once a recording has that
+//! many frames: the earlier ones only fill its history.
 
 use std::time::Duration;
 
-/// How many frames a policy sees: the current one and the two before it.
-pub const HISTORY: usize = 3;
+/// How many frames a policy sees: the one to act on and the ones before it.
+pub const HISTORY_LENGTH: usize = 3;
 
 /// One detected frame, as a policy sees it.
 #[derive(Clone, Debug)]
@@ -22,15 +24,15 @@ pub struct Step {
     pub poses: [Option<[f32; 7]>; 3],
     /// The action in effect after this frame: the one the policy chose for
     /// it, or the one carried over if it was skipped. None for the frame
-    /// being decided.
+    /// being decided, always set for the ones before it.
     pub action: Option<i8>,
 }
 
 /// Chooses a motor action from recent frames.
 pub trait Policy: Send {
-    /// `history` is newest first: the frame to act on, then up to
-    /// `HISTORY - 1` earlier ones (fewer at the start of a recording).
-    fn act(&mut self, history: &[Step]) -> i8;
+    /// `history` is newest first: the frame to act on, then the ones before
+    /// it.
+    fn act(&mut self, history: &[Step; HISTORY_LENGTH]) -> i8;
 
     /// A one-line description, recorded in the recording's metadata.
     fn describe(&self) -> String;
@@ -89,9 +91,11 @@ impl RandomWalk {
 }
 
 impl Policy for RandomWalk {
-    fn act(&mut self, history: &[Step]) -> i8 {
+    fn act(&mut self, history: &[Step; HISTORY_LENGTH]) -> i8 {
         wait(self.latency);
-        let prev = history.get(1).and_then(|s| s.action).unwrap_or(0);
+        let prev = history[1]
+            .action
+            .expect("earlier frames carry their action");
         self.decide(&history[0], prev)
     }
 
@@ -167,18 +171,34 @@ mod tests {
     };
 
     /// Runs the walk over `n` frames 8 ms apart, feeding each action back.
+    /// As in `collect`, the first frames only fill the history, at 0.
     fn run(p: &mut RandomWalk, n: u64) -> Vec<i8> {
-        let mut prev: Option<Step> = None;
-        let mut out = Vec::new();
-        for f in 0..n {
+        let warmup = HISTORY_LENGTH as u64 - 1;
+        // Newest first, like the policy's input.
+        let mut history: Vec<Step> = (0..warmup)
+            .rev()
+            .map(|f| step(f, ms(8 * f), Some(0)))
+            .collect();
+        let mut out = vec![0; warmup as usize];
+        for f in warmup..n {
             let now = step(f, ms(8 * f), None);
-            let history: Vec<Step> = std::iter::once(now.clone()).chain(prev.clone()).collect();
-            let a = p.act(&history);
-            out.push(a);
-            prev = Some(Step {
-                action: Some(a),
-                ..now
+            let input: [Step; HISTORY_LENGTH] = std::array::from_fn(|i| {
+                if i == 0 {
+                    now.clone()
+                } else {
+                    history[i - 1].clone()
+                }
             });
+            let a = p.act(&input);
+            out.push(a);
+            history.insert(
+                0,
+                Step {
+                    action: Some(a),
+                    ..now
+                },
+            );
+            history.truncate(HISTORY_LENGTH - 1);
         }
         out
     }
