@@ -17,7 +17,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use harness::camera::{self, capture_loop, pick_camera, Frame};
-use harness::clock::mono;
+use harness::clock::{self, mono};
 use harness::constants::{HFOV_DEG, TAG_FAMILY, TAG_SIZE_M};
 use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step, HISTORY_LENGTH};
@@ -233,8 +233,21 @@ fn main() -> Result<()> {
         args.policy_step
     );
     let started = Instant::now();
+    let asleep_at_start = clock::asleep();
     let mut abort = None;
     while !stop.load(Ordering::Relaxed) {
+        // Sleep leaves no gap in capture times, whose clock stops with the
+        // Mac, so compare against a clock that keeps running.
+        let slept = clock::asleep().saturating_sub(asleep_at_start);
+        if slept > Duration::from_millis(100) {
+            abort = Some(format!(
+                "the Mac slept for {:.0} s during the recording; rows captured after about \
+                 {:.0} s were recorded after it woke, so discard them",
+                slept.as_secs_f64(),
+                (mono() - t0).as_secs_f64()
+            ));
+            break;
+        }
         if args
             .duration
             .is_some_and(|d| started.elapsed().as_secs_f64() >= d)
@@ -269,8 +282,7 @@ fn main() -> Result<()> {
         thread::sleep(Duration::from_millis(10));
     }
 
-    acted.context("policy")?;
-    detected.context("detection")?;
+    // What was recorded first, then why the run ended early, if it did.
     let stats = stats.context("writing the recording")?;
     stats.report(dropped.load(Ordering::Relaxed), &out);
     if let Some((dev, applied)) = &exposure {
@@ -278,6 +290,8 @@ fn main() -> Result<()> {
             eprintln!("warning: exposure did not hold during this recording: {what}");
         }
     }
+    acted.context("policy")?;
+    detected.context("detection")?;
     if let Some(why) = abort {
         bail!(why);
     }
@@ -370,12 +384,32 @@ fn detect_loop(
     stop: &AtomicBool,
 ) -> Result<()> {
     let mut detector = TagDetector::new(TAG_FAMILY, args.threads, args.decimate, TAG_SIZE_M, k)?;
+    // A camera that drops off USB just stops delivering: nothing errors. So
+    // a run stops once frames have stopped for a second, or never started
+    // within five. Measured on `mono`, which stops while the Mac sleeps; the
+    // main loop catches sleeps.
+    let started = mono();
+    let mut last_frame = None;
     while !stop.load(Ordering::Relaxed) {
         let frame = match slot.take(Duration::from_millis(100)) {
             Take::Item(frame) => frame,
-            Take::Timeout => continue,
-            Take::Closed => break,
+            Take::Timeout => {
+                let (since, limit) = match last_frame {
+                    Some(t) => (t, Duration::from_secs(1)),
+                    None => (started, Duration::from_secs(5)),
+                };
+                let waited = mono().saturating_sub(since);
+                anyhow::ensure!(
+                    waited < limit,
+                    "no frame from the camera for {:.1} s; it may have dropped off USB",
+                    waited.as_secs_f64()
+                );
+                continue;
+            }
+            Take::Closed if stop.load(Ordering::Relaxed) => break,
+            Take::Closed => bail!("the camera stopped delivering frames"),
         };
+        last_frame = Some(mono());
         let t_capture = frame
             .t_capture
             .ok_or_else(|| anyhow!("frame {} has no capture timestamp", frame.seq))?;
