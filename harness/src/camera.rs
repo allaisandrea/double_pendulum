@@ -53,7 +53,7 @@ pub fn pick_camera(spec: &str) -> Result<Picked> {
 
 /// A raw camera frame, untouched until the detector takes it, so frames
 /// dropped for being late cost nothing.
-pub struct Captured {
+pub struct Frame {
     pub seq: u64,
     /// When the sensor captured the frame, on [`clock::mono`]. `None` if the
     /// backend gave no timestamp.
@@ -85,7 +85,7 @@ pub fn describe(f: &CameraFormat) -> String {
 pub fn capture_loop(
     id: &str,
     stop: &AtomicBool,
-    slot: &Latest<Captured>,
+    slot: &Latest<Frame>,
     dropped: &AtomicU64,
     ready: Sender<Result<CameraFormat>>,
 ) -> Result<()> {
@@ -107,7 +107,7 @@ pub fn capture_loop(
             let buf = cam.frame()?;
             let t_arrival = clock::mono();
             let t_capture = buf.capture_timestamp();
-            let replaced = slot.put(Captured {
+            let replaced = slot.put(Frame {
                 seq,
                 t_capture,
                 t_arrival,

@@ -15,7 +15,7 @@
 //! For now the policy is a stand-in, a random walk; see `policy.rs`.
 
 use anyhow::{anyhow, bail, Context, Result};
-use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
+use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::clock::mono;
 use harness::detect::{Intrinsics, Pixels, Tracker};
 use harness::mailbox::{Latest, Take};
@@ -455,7 +455,7 @@ struct DetectStats {
 fn detect_loop(
     args: &Args,
     k: Intrinsics,
-    slot: &Latest<Captured>,
+    slot: &Latest<Frame>,
     to_policy: Sender<Detected>,
     live: &Live,
     stop: &AtomicBool,
@@ -464,23 +464,23 @@ fn detect_loop(
     let mut stats = DetectStats::default();
 
     while !stop.load(Ordering::Relaxed) {
-        let cap = match slot.take(Duration::from_millis(100)) {
-            Take::Item(cap) => cap,
+        let frame = match slot.take(Duration::from_millis(100)) {
+            Take::Item(frame) => frame,
             Take::Timeout => continue,
             Take::Closed => break,
         };
-        let t_capture = cap
+        let t_capture = frame
             .t_capture
-            .ok_or_else(|| anyhow!("frame {} has no capture timestamp", cap.seq))?;
-        stats.age_ms.push((cap.t_arrival.as_secs_f64() - t_capture.as_secs_f64()) * 1e3);
+            .ok_or_else(|| anyhow!("frame {} has no capture timestamp", frame.seq))?;
+        stats.age_ms.push((frame.t_arrival.as_secs_f64() - t_capture.as_secs_f64()) * 1e3);
 
-        let res = cap.buf.resolution();
+        let res = frame.buf.resolution();
         let (w, h) = (res.width() as usize, res.height() as usize);
         let t_detect_start = mono();
-        let tags = if is_packed_yuyv(&cap.buf) {
-            tracker.detect(w, h, Pixels::Yuyv(cap.buf.buffer()))?
+        let tags = if is_packed_yuyv(&frame.buf) {
+            tracker.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
         } else {
-            let rgb = cap.buf.decode_image::<RgbFormat>()?;
+            let rgb = frame.buf.decode_image::<RgbFormat>()?;
             tracker.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
         };
         let t_detected = mono();
@@ -509,9 +509,9 @@ fn detect_loop(
             .collect();
 
         let sent = to_policy.send(Detected {
-            frame: cap.seq,
+            frame: frame.seq,
             t_capture,
-            t_arrival: cap.t_arrival,
+            t_arrival: frame.t_arrival,
             t_detect_start,
             t_detected,
             tags: tag_rows,

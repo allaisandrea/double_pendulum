@@ -10,7 +10,7 @@
 //! is recorded, stamped with its capture time so playback runs in real time.
 
 use anyhow::{anyhow, bail, Context, Result};
-use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
+use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::detect::{Intrinsics, Pixels, Tag, Tracker};
 use harness::mailbox::{Latest, Take};
 use harness::mov::MovWriter;
@@ -274,7 +274,7 @@ fn main() -> Result<()> {
 
 fn detect_loop(
     args: &Args,
-    slot: &Latest<Captured>,
+    slot: &Latest<Frame>,
     tx: SyncSender<Detected>,
     stop: &AtomicBool,
     processed: &AtomicU64,
@@ -294,16 +294,16 @@ fn detect_loop(
 
     // Polls rather than blocks so Ctrl-C lands even if the camera stalls.
     while !stop.load(Ordering::Relaxed) {
-        let cap = match slot.take(Duration::from_millis(100)) {
-            Take::Item(cap) => cap,
+        let frame = match slot.take(Duration::from_millis(100)) {
+            Take::Item(frame) => frame,
             Take::Timeout => continue,
             Take::Closed => break,
         };
         // Playback time: the sensor's timestamp where the backend reports
         // one, else arrival, measured from the first frame.
-        let t = cap.t_capture.unwrap_or(cap.t_arrival);
+        let t = frame.t_capture.unwrap_or(frame.t_arrival);
         let pts = t.saturating_sub(*t_first.get_or_insert(t));
-        let res = cap.buf.resolution();
+        let res = frame.buf.resolution();
         let (w, h) = (res.width(), res.height());
         if tracker.is_none() {
             let k = args.intrinsics(w, h);
@@ -316,14 +316,14 @@ fn detect_loop(
 
         let started = Instant::now();
         let (w, h) = (w as usize, h as usize);
-        let tags = if is_packed_yuyv(&cap.buf) {
-            tracker.detect(w, h, Pixels::Yuyv(cap.buf.buffer()))?
+        let tags = if is_packed_yuyv(&frame.buf) {
+            tracker.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
         } else {
-            let rgb = cap.buf.decode_image::<RgbFormat>()?;
+            let rgb = frame.buf.decode_image::<RgbFormat>()?;
             tracker.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
         };
         let detect_ms = started.elapsed().as_secs_f64() * 1e3;
-        write_csv(&mut csv, cap.seq, pts, detect_ms, &tags)?;
+        write_csv(&mut csv, frame.seq, pts, detect_ms, &tags)?;
 
         stats.frames += 1;
         stats.frames_with_tags += u64::from(!tags.is_empty());
@@ -336,7 +336,7 @@ fn detect_loop(
         processed.fetch_add(1, Ordering::Relaxed);
         let detected = Detected {
             pts,
-            buf: cap.buf,
+            buf: frame.buf,
             k: *k,
             tags,
         };
