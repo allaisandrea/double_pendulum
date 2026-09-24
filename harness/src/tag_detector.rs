@@ -1,7 +1,7 @@
 //! Grayscale conversion, tag detection and pose estimation.
 
 use anyhow::{anyhow, ensure, Result};
-use apriltag::{Detector, Family, Image, TagParams};
+use apriltag::{Detection, Detector, Family, Image, PoseEstimation, TagParams};
 
 /// Pinhole camera intrinsics, in pixels.
 #[derive(Clone, Copy, Debug)]
@@ -59,46 +59,7 @@ impl Pose {
 
     /// The rotation as a unit quaternion (w, x, y, z) with w >= 0.
     pub fn quaternion(&self) -> [f64; 4] {
-        let r = &self.r;
-        let trace = r[0][0] + r[1][1] + r[2][2];
-        let q = if trace > 0.0 {
-            let s = 2.0 * (trace + 1.0).sqrt();
-            [
-                s / 4.0,
-                (r[2][1] - r[1][2]) / s,
-                (r[0][2] - r[2][0]) / s,
-                (r[1][0] - r[0][1]) / s,
-            ]
-        } else if r[0][0] > r[1][1] && r[0][0] > r[2][2] {
-            let s = 2.0 * (1.0 + r[0][0] - r[1][1] - r[2][2]).sqrt();
-            [
-                (r[2][1] - r[1][2]) / s,
-                s / 4.0,
-                (r[0][1] + r[1][0]) / s,
-                (r[0][2] + r[2][0]) / s,
-            ]
-        } else if r[1][1] > r[2][2] {
-            let s = 2.0 * (1.0 + r[1][1] - r[0][0] - r[2][2]).sqrt();
-            [
-                (r[0][2] - r[2][0]) / s,
-                (r[0][1] + r[1][0]) / s,
-                s / 4.0,
-                (r[1][2] + r[2][1]) / s,
-            ]
-        } else {
-            let s = 2.0 * (1.0 + r[2][2] - r[0][0] - r[1][1]).sqrt();
-            [
-                (r[1][0] - r[0][1]) / s,
-                (r[0][2] + r[2][0]) / s,
-                (r[1][2] + r[2][1]) / s,
-                s / 4.0,
-            ]
-        };
-        if q[0] < 0.0 {
-            q.map(|v| -v)
-        } else {
-            q
-        }
+        quaternion_from_rotation(&self.r)
     }
 }
 
@@ -161,76 +122,135 @@ impl TagDetector {
     }
 
     pub fn detect(&mut self, w: usize, h: usize, pixels: Pixels) -> Result<Vec<Tag>> {
-        if self
-            .gray
-            .as_ref()
-            .is_none_or(|g| g.width() != w || g.height() != h)
-        {
-            self.gray = Some(Image::zeros_with_alignment(w, h, 96)?);
-        }
-        let gray = self.gray.as_mut().expect("allocated above");
-        let stride = gray.stride();
-        let buf = gray.as_slice_mut();
+        let gray = gray_image(&mut self.gray, w, h)?;
         match pixels {
-            Pixels::Yuyv(data) => {
-                ensure!(data.len() >= 2 * w * h, "YUYV frame too short for {w}x{h}");
-                for (y, row) in data.chunks_exact(2 * w).take(h).enumerate() {
-                    for (out, px) in buf[y * stride..][..w]
-                        .iter_mut()
-                        .zip(row.as_chunks::<2>().0)
-                    {
-                        *out = px[0];
-                    }
-                }
-            }
-            Pixels::Rgb(data) => {
-                ensure!(data.len() >= 3 * w * h, "RGB frame too short for {w}x{h}");
-                for (y, row) in data.chunks_exact(3 * w).take(h).enumerate() {
-                    for (out, px) in buf[y * stride..][..w]
-                        .iter_mut()
-                        .zip(row.as_chunks::<3>().0)
-                    {
-                        // BT.601 luma in 8.8 fixed point.
-                        let luma =
-                            77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2]);
-                        *out = (luma >> 8) as u8;
-                    }
-                }
-            }
+            Pixels::Yuyv(data) => luma_from_yuyv(data, gray)?,
+            Pixels::Rgb(data) => luma_from_rgb(data, gray)?,
         }
-
-        let tags = self
-            .detector
-            .detect(gray)
-            .into_iter()
-            .map(|d| {
-                let mut solutions =
-                    d.estimate_tag_pose_orthogonal_iteration(&self.params, POSE_ITERATIONS);
-                solutions.sort_by(|a, b| a.error.total_cmp(&b.error));
-                let pose = solutions.first().map(|s| {
-                    let (r, t) = (s.pose.rotation().data(), s.pose.translation().data());
-                    Pose {
-                        r: [[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]],
-                        t: [t[0], t[1], t[2]],
-                        err: s.error,
-                    }
-                });
-                Tag {
-                    id: d.id(),
-                    hamming: d.hamming(),
-                    margin: d.decision_margin(),
-                    pose,
-                    alt_err: solutions.get(1).map(|s| s.error),
-                }
-            })
-            .collect();
-        Ok(tags)
+        let detections = self.detector.detect(gray);
+        Ok(detections.iter().map(|d| to_tag(d, &self.params)).collect())
     }
 }
 
 /// Orthogonal-iteration steps per pose; what apriltag's own
 /// `estimate_tag_pose` uses.
 const POSE_ITERATIONS: usize = 50;
+
+/// The grayscale image in `slot`, allocated on first use and again whenever
+/// the frame size changes.
+fn gray_image(slot: &mut Option<Image>, w: usize, h: usize) -> Result<&mut Image> {
+    if slot
+        .as_ref()
+        .is_none_or(|g| g.width() != w || g.height() != h)
+    {
+        *slot = Some(Image::zeros_with_alignment(w, h, 96)?);
+    }
+    Ok(slot.as_mut().expect("allocated above"))
+}
+
+/// Copies the luma of a packed YUYV frame into `gray`: every other byte.
+fn luma_from_yuyv(data: &[u8], gray: &mut Image) -> Result<()> {
+    let (w, h, stride) = (gray.width(), gray.height(), gray.stride());
+    ensure!(data.len() >= 2 * w * h, "YUYV frame too short for {w}x{h}");
+    let buf = gray.as_slice_mut();
+    for (y, row) in data.chunks_exact(2 * w).take(h).enumerate() {
+        for (out, px) in buf[y * stride..][..w]
+            .iter_mut()
+            .zip(row.as_chunks::<2>().0)
+        {
+            *out = px[0];
+        }
+    }
+    Ok(())
+}
+
+/// Converts a packed 8-bit RGB frame to luma in `gray`.
+fn luma_from_rgb(data: &[u8], gray: &mut Image) -> Result<()> {
+    let (w, h, stride) = (gray.width(), gray.height(), gray.stride());
+    ensure!(data.len() >= 3 * w * h, "RGB frame too short for {w}x{h}");
+    let buf = gray.as_slice_mut();
+    for (y, row) in data.chunks_exact(3 * w).take(h).enumerate() {
+        for (out, px) in buf[y * stride..][..w]
+            .iter_mut()
+            .zip(row.as_chunks::<3>().0)
+        {
+            // BT.601 luma in 8.8 fixed point.
+            let luma = 77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2]);
+            *out = (luma >> 8) as u8;
+        }
+    }
+    Ok(())
+}
+
+/// Estimates a detection's pose and describes it as a [`Tag`]: the better of
+/// the two pose solutions, and the error of the other.
+fn to_tag(d: &Detection, params: &TagParams) -> Tag {
+    let mut solutions = d.estimate_tag_pose_orthogonal_iteration(params, POSE_ITERATIONS);
+    solutions.sort_by(|a, b| a.error.total_cmp(&b.error));
+    Tag {
+        id: d.id(),
+        hamming: d.hamming(),
+        margin: d.decision_margin(),
+        pose: solutions.first().map(to_pose),
+        alt_err: solutions.get(1).map(|s| s.error),
+    }
+}
+
+/// One of apriltag's pose solutions, as a [`Pose`].
+fn to_pose(s: &PoseEstimation) -> Pose {
+    let (r, t) = (s.pose.rotation().data(), s.pose.translation().data());
+    Pose {
+        r: [[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]],
+        t: [t[0], t[1], t[2]],
+        err: s.error,
+    }
+}
+
+/// A rotation matrix as a unit quaternion (w, x, y, z) with w >= 0. q and
+/// -q are the same rotation; picking w >= 0 makes the result unique.
+/// Branches on the largest diagonal term, so the square root never takes a
+/// small argument.
+fn quaternion_from_rotation(r: &[[f64; 3]; 3]) -> [f64; 4] {
+    let trace = r[0][0] + r[1][1] + r[2][2];
+    let q = if trace > 0.0 {
+        let s = 2.0 * (trace + 1.0).sqrt();
+        [
+            s / 4.0,
+            (r[2][1] - r[1][2]) / s,
+            (r[0][2] - r[2][0]) / s,
+            (r[1][0] - r[0][1]) / s,
+        ]
+    } else if r[0][0] > r[1][1] && r[0][0] > r[2][2] {
+        let s = 2.0 * (1.0 + r[0][0] - r[1][1] - r[2][2]).sqrt();
+        [
+            (r[2][1] - r[1][2]) / s,
+            s / 4.0,
+            (r[0][1] + r[1][0]) / s,
+            (r[0][2] + r[2][0]) / s,
+        ]
+    } else if r[1][1] > r[2][2] {
+        let s = 2.0 * (1.0 + r[1][1] - r[0][0] - r[2][2]).sqrt();
+        [
+            (r[0][2] - r[2][0]) / s,
+            (r[0][1] + r[1][0]) / s,
+            s / 4.0,
+            (r[1][2] + r[2][1]) / s,
+        ]
+    } else {
+        let s = 2.0 * (1.0 + r[2][2] - r[0][0] - r[1][1]).sqrt();
+        [
+            (r[1][0] - r[0][1]) / s,
+            (r[0][2] + r[2][0]) / s,
+            (r[1][2] + r[2][1]) / s,
+            s / 4.0,
+        ]
+    };
+    if q[0] < 0.0 {
+        q.map(|v| -v)
+    } else {
+        q
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -269,6 +289,10 @@ mod tests {
         assert_eq!((tag.id, tag.hamming), (0, 0));
 
         let pose = tag.pose.expect("pose");
+        // The pose is the better of the two solutions; this oblique view has
+        // a second one.
+        let alt_err = tag.alt_err.expect("a second pose solution");
+        assert!(alt_err > pose.err, "alt_err {alt_err} <= err {}", pose.err);
         let dt = (0..3)
             .map(|i| (pose.t[i] - truth.t[i]).powi(2))
             .sum::<f64>()
@@ -326,5 +350,74 @@ mod tests {
         for (got, want) in pose.quaternion().iter().zip([h, 0.0, 0.0, h]) {
             assert!((got - want).abs() < 1e-9, "{:?}", pose.quaternion());
         }
+    }
+
+    /// The rotation matrix of a unit quaternion (w, x, y, z).
+    fn rotation_from_quaternion([w, x, y, z]: [f64; 4]) -> [[f64; 3]; 3] {
+        [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - w * z),
+                2.0 * (x * z + w * y),
+            ],
+            [
+                2.0 * (x * y + w * z),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - w * x),
+            ],
+            [
+                2.0 * (x * z - w * y),
+                2.0 * (y * z + w * x),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ]
+    }
+
+    #[test]
+    fn quaternion_round_trips_through_every_branch() {
+        // Half turns about each axis land in the three branches the trace
+        // test skips; the grid covers the rest.
+        let half_turns = [(180.0, 0.0, 0.0), (0.0, 180.0, 0.0), (0.0, 0.0, 180.0)];
+        let steps = [-170.0, -120.0, -60.0, 0.0, 45.0, 100.0, 150.0];
+        let mut angles = half_turns.to_vec();
+        for a in steps {
+            for b in steps {
+                for c in steps {
+                    angles.push((a, b, c));
+                }
+            }
+        }
+        for (a, b, c) in angles {
+            let r = synthetic_tag_rendering::rotation(a, b, c);
+            let q = quaternion_from_rotation(&r);
+            let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+            assert!(
+                (norm - 1.0).abs() < 1e-9,
+                "|q| = {norm} for ({a}, {b}, {c})"
+            );
+            assert!(q[0] >= 0.0, "w < 0 for ({a}, {b}, {c}): {q:?}");
+            // Element-wise: angle_deg's acos cannot resolve angles this small.
+            let back = rotation_from_quaternion(q);
+            let diff = (0..9)
+                .map(|i| (r[i / 3][i % 3] - back[i / 3][i % 3]).abs())
+                .fold(0.0, f64::max);
+            assert!(diff < 1e-12, "({a}, {b}, {c}) came back {diff} off");
+        }
+        // A half turn about x is (0, 1, 0, 0), up to sign.
+        let q = quaternion_from_rotation(&synthetic_tag_rendering::rotation(180.0, 0.0, 0.0));
+        assert!((q[1].abs() - 1.0).abs() < 1e-9, "{q:?}");
+    }
+
+    #[test]
+    fn the_gray_image_follows_the_frame_size() {
+        let mut slot = None;
+        let first = gray_image(&mut slot, 64, 48).unwrap();
+        assert_eq!((first.width(), first.height()), (64, 48));
+        let ptr = first.as_slice_mut().as_ptr();
+        // The same size reuses the buffer; a new size replaces it.
+        let same = gray_image(&mut slot, 64, 48).unwrap();
+        assert_eq!(same.as_slice_mut().as_ptr(), ptr);
+        let resized = gray_image(&mut slot, 100, 30).unwrap();
+        assert_eq!((resized.width(), resized.height()), (100, 30));
     }
 }
