@@ -143,14 +143,28 @@ mod tests {
     }
 
     fn step(frame: u64, t: Duration, action: Option<i8>) -> Step {
-        Step { frame, t, poses: vec![], action }
+        Step {
+            frame,
+            t,
+            poses: vec![],
+            action,
+        }
     }
 
     fn walk(range: i8, step: u8, duty: DutyCycle) -> RandomWalk {
-        RandomWalk { seed: 1, range, step, latency: Duration::ZERO, duty }
+        RandomWalk {
+            seed: 1,
+            range,
+            step,
+            latency: Duration::ZERO,
+            duty,
+        }
     }
 
-    const ALWAYS: DutyCycle = DutyCycle { active: Duration::from_secs(1), rest: Duration::ZERO };
+    const ALWAYS: DutyCycle = DutyCycle {
+        active: Duration::from_secs(1),
+        rest: Duration::ZERO,
+    };
 
     /// Runs the walk over `n` frames 8 ms apart, feeding each action back.
     fn run(p: &mut RandomWalk, n: u64) -> Vec<i8> {
@@ -161,7 +175,10 @@ mod tests {
             let history: Vec<Step> = std::iter::once(now.clone()).chain(prev.clone()).collect();
             let a = p.act(&history);
             out.push(a);
-            prev = Some(Step { action: Some(a), ..now });
+            prev = Some(Step {
+                action: Some(a),
+                ..now
+            });
         }
         out
     }
@@ -172,13 +189,19 @@ mod tests {
             let t = std::time::Instant::now();
             wait(want);
             let took = t.elapsed();
-            assert!(took >= want && took < want + Duration::from_micros(500), "{want:?} took {took:?}");
+            assert!(
+                took >= want && took < want + Duration::from_micros(500),
+                "{want:?} took {took:?}"
+            );
         }
     }
 
     #[test]
     fn rests_start_and_end_on_time() {
-        let d = DutyCycle { active: ms(40), rest: ms(60) };
+        let d = DutyCycle {
+            active: ms(40),
+            rest: ms(60),
+        };
         let pattern: Vec<bool> = (0..10).map(|i| d.resting(ms(20 * i))).collect();
         let (f, t) = (false, true);
         assert_eq!(pattern, [f, f, t, t, t, f, f, t, t, t]);
@@ -193,7 +216,11 @@ mod tests {
         // It gets to both ends, and reflection keeps it from sticking there.
         assert!(a.contains(&20) && a.contains(&-20));
         let at_ends = a.iter().filter(|x| x.abs() == 20).count();
-        assert!(at_ends < a.len() / 10, "{at_ends} of {} at the limits", a.len());
+        assert!(
+            at_ends < a.len() / 10,
+            "{at_ends} of {} at the limits",
+            a.len()
+        );
     }
 
     #[test]
@@ -208,7 +235,17 @@ mod tests {
     #[test]
     fn it_rests_at_zero_and_restarts_from_zero() {
         // 400 ms on, 400 ms off; frames every 8 ms.
-        let a = run(&mut walk(60, 10, DutyCycle { active: ms(400), rest: ms(400) }), 150);
+        let a = run(
+            &mut walk(
+                60,
+                10,
+                DutyCycle {
+                    active: ms(400),
+                    rest: ms(400),
+                },
+            ),
+            150,
+        );
         assert!(a[50..100].iter().all(|&x| x == 0), "not zero while resting");
         assert!(a[..50].iter().any(|&x| x != 0), "never moved while active");
         assert!(a[100].abs() <= 10, "did not restart from zero: {}", a[100]);
@@ -218,7 +255,11 @@ mod tests {
     fn a_skipped_frame_continues_from_the_action_carried_through_it() {
         let mut p = walk(60, 10, ALWAYS);
         // Frame 2 was skipped: its action is the one carried from frame 1.
-        let history = [step(3, ms(24), None), step(2, ms(16), Some(40)), step(1, ms(8), Some(40))];
+        let history = [
+            step(3, ms(24), None),
+            step(2, ms(16), Some(40)),
+            step(1, ms(8), Some(40)),
+        ];
         let a = p.act(&history);
         assert!((30..=50).contains(&a));
     }

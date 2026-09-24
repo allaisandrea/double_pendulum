@@ -1,7 +1,7 @@
 //! Draws each detected tag's pose over a frame.
 
-use crate::tag_detector::{Intrinsics, Tag};
 use crate::draw::{self, BLUE, CYAN, GREEN, RED};
+use crate::tag_detector::{Intrinsics, Tag};
 use image::RgbImage;
 
 /// Draws the tag's axes and a cube standing on the tag. A cube that stays
@@ -45,8 +45,8 @@ pub fn draw_tag(img: &mut RgbImage, tag: &Tag, k: &Intrinsics, tag_size: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tag_detector::{Pixels, Pose, TagDetector};
     use crate::synthetic_tag_rendering;
+    use crate::tag_detector::{Pixels, Pose, TagDetector};
 
     /// Draws the overlay on a synthetic frame. Set TAGCAM_DUMP=<path.jpg> to
     /// write the result out for a visual check.

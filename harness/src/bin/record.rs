@@ -10,12 +10,12 @@
 //! is recorded, stamped with its capture time so playback runs in real time.
 
 use anyhow::{anyhow, bail, Context, Result};
+use clap::Parser;
 use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
-use harness::tag_detector::{Intrinsics, Pixels, Tag, TagDetector};
 use harness::latest::{Latest, Take};
 use harness::mov::MovWriter;
+use harness::tag_detector::{Intrinsics, Pixels, Tag, TagDetector};
 use harness::{overlay_tag, uvc, yuyv};
-use clap::Parser;
 use image::RgbImage;
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::Buffer;
@@ -175,9 +175,7 @@ fn main() -> Result<()> {
             .context("setting a fixed exposure")?;
         eprintln!(
             "exposure: {} us fixed, gain {} ({})",
-            applied.exposure_us,
-            args.gain,
-            dev.name
+            applied.exposure_us, args.gain, dev.name
         );
         Some((dev, applied))
     } else {

@@ -65,7 +65,11 @@ pub struct Table {
 impl Table {
     /// Creates the frames table at `path`, with one column group per tag id
     /// and `metadata` in its schema.
-    pub fn create(path: &Path, tag_ids: &[usize], metadata: HashMap<String, String>) -> Result<Self> {
+    pub fn create(
+        path: &Path,
+        tag_ids: &[usize],
+        metadata: HashMap<String, String>,
+    ) -> Result<Self> {
         let schema = frames_schema(tag_ids, metadata);
         let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
         let writer = StreamWriter::try_new(BufWriter::new(file), &schema)?;
@@ -127,8 +131,20 @@ pub fn pose_row(t: [f64; 3], q: [f64; 4]) -> [f32; 7] {
 const POSE_LEN: i32 = 7;
 
 /// Columns before and after the per-tag groups.
-const HEAD: [&str; 5] = ["frame", "t_capture", "t_arrival", "t_detect_start", "t_detected"];
-const TAIL: [&str; 5] = ["acted", "t_policy_start", "t_policy_done", "t_sent", "action"];
+const HEAD: [&str; 5] = [
+    "frame",
+    "t_capture",
+    "t_arrival",
+    "t_detect_start",
+    "t_detected",
+];
+const TAIL: [&str; 5] = [
+    "acted",
+    "t_policy_start",
+    "t_policy_done",
+    "t_sent",
+    "action",
+];
 const PER_TAG: usize = 4;
 
 fn duration() -> DataType {
@@ -136,7 +152,10 @@ fn duration() -> DataType {
 }
 
 fn pose_type() -> DataType {
-    DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), POSE_LEN)
+    DataType::FixedSizeList(
+        Arc::new(Field::new("item", DataType::Float32, false)),
+        POSE_LEN,
+    )
 }
 
 fn frames_schema(tag_ids: &[usize], metadata: HashMap<String, String>) -> SchemaRef {
@@ -145,8 +164,16 @@ fn frames_schema(tag_ids: &[usize], metadata: HashMap<String, String>) -> Schema
     for id in tag_ids {
         fields.push(Field::new(format!("tag{id}_pose"), pose_type(), true));
         fields.push(Field::new(format!("tag{id}_err"), DataType::Float32, true));
-        fields.push(Field::new(format!("tag{id}_alt_err"), DataType::Float32, true));
-        fields.push(Field::new(format!("tag{id}_margin"), DataType::Float32, true));
+        fields.push(Field::new(
+            format!("tag{id}_alt_err"),
+            DataType::Float32,
+            true,
+        ));
+        fields.push(Field::new(
+            format!("tag{id}_margin"),
+            DataType::Float32,
+            true,
+        ));
     }
     fields.push(Field::new(TAIL[0], DataType::Boolean, false));
     fields.extend(TAIL[1..4].iter().map(|n| Field::new(*n, duration(), true)));
@@ -155,14 +182,19 @@ fn frames_schema(tag_ids: &[usize], metadata: HashMap<String, String>) -> Schema
 }
 
 fn pose_builder() -> FixedSizeListBuilder<Float32Builder> {
-    FixedSizeListBuilder::new(Float32Builder::new(), POSE_LEN)
-        .with_field(Field::new("item", DataType::Float32, false))
+    FixedSizeListBuilder::new(Float32Builder::new(), POSE_LEN).with_field(Field::new(
+        "item",
+        DataType::Float32,
+        false,
+    ))
 }
 
 fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
     let n_tags = (schema.fields().len() - HEAD.len() - TAIL.len()) / PER_TAG;
     let mut frame = UInt64Builder::new();
-    let mut times: Vec<_> = (1..HEAD.len()).map(|_| DurationNanosecondBuilder::new()).collect();
+    let mut times: Vec<_> = (1..HEAD.len())
+        .map(|_| DurationNanosecondBuilder::new())
+        .collect();
     let mut poses: Vec<_> = (0..n_tags).map(|_| pose_builder()).collect();
     let mut errs: Vec<_> = (0..n_tags).map(|_| Float32Builder::new()).collect();
     let mut alts: Vec<_> = (0..n_tags).map(|_| Float32Builder::new()).collect();
@@ -172,9 +204,17 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
     let mut action = Int8Builder::new();
 
     for r in rows {
-        anyhow::ensure!(r.tags.len() == n_tags, "row has {} tags, schema {n_tags}", r.tags.len());
+        anyhow::ensure!(
+            r.tags.len() == n_tags,
+            "row has {} tags, schema {n_tags}",
+            r.tags.len()
+        );
         frame.append_value(r.frame);
-        for (b, t) in times.iter_mut().zip([r.t_capture, r.t_arrival, r.t_detect_start, r.t_detected]) {
+        for (b, t) in
+            times
+                .iter_mut()
+                .zip([r.t_capture, r.t_arrival, r.t_detect_start, r.t_detected])
+        {
             b.append_value(t);
         }
         for (i, tag) in r.tags.iter().enumerate() {
@@ -197,7 +237,10 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
             }
         }
         acted.append_value(r.acted);
-        for (b, t) in policy_times.iter_mut().zip([r.t_policy_start, r.t_policy_done, r.t_sent]) {
+        for (b, t) in policy_times
+            .iter_mut()
+            .zip([r.t_policy_start, r.t_policy_done, r.t_sent])
+        {
             b.append_option(t);
         }
         action.append_value(r.action);
@@ -212,7 +255,11 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
         columns.push(Arc::new(margins[i].finish()));
     }
     columns.push(Arc::new(acted.finish()));
-    columns.extend(policy_times.iter_mut().map(|b| Arc::new(b.finish()) as ArrayRef));
+    columns.extend(
+        policy_times
+            .iter_mut()
+            .map(|b| Arc::new(b.finish()) as ArrayRef),
+    );
     columns.push(Arc::new(action.finish()));
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
 }
@@ -281,7 +328,12 @@ mod tests {
         let batches: Vec<_> = reader.map(|b| b.unwrap()).collect();
         assert_eq!(batches.len(), 2);
         let (b, c) = (&batches[0], &batches[1]);
-        let t = |b: &RecordBatch, n: &str| b.column_by_name(n).unwrap().as_primitive::<DurationNanosecondType>().value(0);
+        let t = |b: &RecordBatch, n: &str| {
+            b.column_by_name(n)
+                .unwrap()
+                .as_primitive::<DurationNanosecondType>()
+                .value(0)
+        };
         assert_eq!(t(b, "t_capture"), -5);
         assert_eq!(t(b, "t_arrival"), 10);
         assert_eq!(t(c, "t_detected"), 40);
@@ -294,7 +346,13 @@ mod tests {
         assert!(b.column_by_name("acted").unwrap().as_boolean().value(0));
         assert!(!c.column_by_name("acted").unwrap().as_boolean().value(0));
         assert!(c.column_by_name("t_policy_start").unwrap().is_null(0));
-        assert_eq!(c.column_by_name("action").unwrap().as_primitive::<Int8Type>().value(0), -30);
+        assert_eq!(
+            c.column_by_name("action")
+                .unwrap()
+                .as_primitive::<Int8Type>()
+                .value(0),
+            -30
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

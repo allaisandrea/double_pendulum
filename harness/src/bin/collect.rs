@@ -15,14 +15,14 @@
 //! For now the policy is a stand-in, a random walk; see `policy.rs`.
 
 use anyhow::{anyhow, bail, Context, Result};
+use clap::Parser;
 use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::clock::mono;
-use harness::tag_detector::{Intrinsics, Pixels, TagDetector};
 use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
 use harness::record::{self, FrameRow, Table, TagRow};
+use harness::tag_detector::{Intrinsics, Pixels, TagDetector};
 use harness::{serial, uvc};
-use clap::Parser;
 use nokhwa::pixel_format::RgbFormat;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -248,7 +248,9 @@ fn main() -> Result<()> {
     };
 
     let out = args.out.clone().unwrap_or_else(|| {
-        let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         PathBuf::from(format!("recordings/{secs}"))
     });
     std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
@@ -281,7 +283,10 @@ fn main() -> Result<()> {
         let applied = dev
             .set_exposure(args.exposure_us, Some(args.gain))
             .context("setting a fixed exposure")?;
-        eprintln!("exposure: {} us fixed, gain {}", applied.exposure_us, args.gain);
+        eprintln!(
+            "exposure: {} us fixed, gain {}",
+            applied.exposure_us, args.gain
+        );
         Some((dev, applied))
     } else {
         None
@@ -308,13 +313,25 @@ fn main() -> Result<()> {
         ("t0_mono_ns", t0.as_nanos().to_string()),
         ("t0_unix_ns", wall_t0.as_nanos().to_string()),
         ("clock", "CLOCK_UPTIME_RAW (mach_absolute_time), ns".into()),
-        ("pose", "x y z qw qx qy qz: tag frame to camera frame, metres; qw >= 0".into()),
-        ("tag_frame", "origin at tag centre, x right, y down, z into the tag".into()),
+        (
+            "pose",
+            "x y z qw qx qy qz: tag frame to camera frame, metres; qw >= 0".into(),
+        ),
+        (
+            "tag_frame",
+            "origin at tag centre, x right, y down, z into the tag".into(),
+        ),
         ("tags", format!("{:?}", args.tags)),
         ("tag_family", args.family.clone()),
         ("tag_size_m", args.tag_size.to_string()),
-        ("intrinsics", format!("fx={} fy={} cx={} cy={}", k.fx, k.fy, k.cx, k.cy)),
-        ("camera", format!("{} ({})", cam.name, camera::describe(&format))),
+        (
+            "intrinsics",
+            format!("fx={} fy={} cx={} cy={}", k.fx, k.fy, k.cx, k.cy),
+        ),
+        (
+            "camera",
+            format!("{} ({})", cam.name, camera::describe(&format)),
+        ),
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
@@ -392,11 +409,17 @@ fn main() -> Result<()> {
                 false if duty.resting(mono() - t0) => " resting |",
                 false => " active  |",
             };
-            eprintln!("{}", status_line(&live, &prev, &now, started.elapsed(), phase));
+            eprintln!(
+                "{}",
+                status_line(&live, &prev, &now, started.elapsed(), phase)
+            );
             prev = now;
             next_status += status_every;
         }
-        if args.duration.is_some_and(|d| started.elapsed().as_secs_f64() >= d) {
+        if args
+            .duration
+            .is_some_and(|d| started.elapsed().as_secs_f64() >= d)
+        {
             break;
         }
         if reset.load(Ordering::Relaxed) {
@@ -417,7 +440,9 @@ fn main() -> Result<()> {
     // The policy thread first: it writes a final zero, so the motor stops
     // before anything else winds down.
     let acted = act.join().map_err(|_| anyhow!("policy thread panicked"))?;
-    let detected = detect.join().map_err(|_| anyhow!("detect thread panicked"))?;
+    let detected = detect
+        .join()
+        .map_err(|_| anyhow!("detect thread panicked"))?;
     let logged = logger.join().map_err(|_| anyhow!("logger panicked"))?;
     let _ = watcher.join();
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -428,7 +453,13 @@ fn main() -> Result<()> {
     let acted = acted.context("policy")?;
     let detected = detected.context("detection")?;
     let n_rows = logged.context("writing the recording")?;
-    report(&detected, &acted, dropped.load(Ordering::Relaxed), n_rows, &out);
+    report(
+        &detected,
+        &acted,
+        dropped.load(Ordering::Relaxed),
+        n_rows,
+        &out,
+    );
     if let Some((dev, applied)) = &exposure {
         if let Some(what) = dev.drift(applied) {
             eprintln!("warning: exposure did not hold during this recording: {what}");
@@ -472,7 +503,9 @@ fn detect_loop(
         let t_capture = frame
             .t_capture
             .ok_or_else(|| anyhow!("frame {} has no capture timestamp", frame.seq))?;
-        stats.age_ms.push((frame.t_arrival.as_secs_f64() - t_capture.as_secs_f64()) * 1e3);
+        stats
+            .age_ms
+            .push((frame.t_arrival.as_secs_f64() - t_capture.as_secs_f64()) * 1e3);
 
         let res = frame.buf.resolution();
         let (w, h) = (res.width() as usize, res.height() as usize);
@@ -485,10 +518,14 @@ fn detect_loop(
         };
         let t_detected = mono();
         stats.frames += 1;
-        stats.detect_ms.push((t_detected - t_detect_start).as_secs_f64() * 1e3);
+        stats
+            .detect_ms
+            .push((t_detected - t_detect_start).as_secs_f64() * 1e3);
         live.frames.fetch_add(1, Ordering::Relaxed);
-        live.slowest_detect_us
-            .fetch_max((t_detected - t_detect_start).as_micros() as u64, Ordering::Relaxed);
+        live.slowest_detect_us.fetch_max(
+            (t_detected - t_detect_start).as_micros() as u64,
+            Ordering::Relaxed,
+        );
 
         let tag_rows: Vec<Option<TagRow>> = args
             .tags
@@ -612,10 +649,16 @@ fn policy_loop(
             stats.policy_ms.push(ms(t_policy_start, t_policy_done));
             stats.delay_ms.push(ms(newest.t_capture, t_sent));
             live.acted.fetch_add(1, Ordering::Relaxed);
-            live.slowest_send_us
-                .fetch_max(t_sent.saturating_sub(newest.t_capture).as_micros() as u64, Ordering::Relaxed);
+            live.slowest_send_us.fetch_max(
+                t_sent.saturating_sub(newest.t_capture).as_micros() as u64,
+                Ordering::Relaxed,
+            );
             remember(&mut history, step(&newest, Some(action)));
-            let _ = rows.send(row(newest, action, Some([t_policy_start, t_policy_done, t_sent])));
+            let _ = rows.send(row(
+                newest,
+                action,
+                Some([t_policy_start, t_policy_done, t_sent]),
+            ));
         }
         Ok(())
     })();
@@ -661,18 +704,33 @@ fn quantiles(v: &mut [f64]) -> String {
     }
     v.sort_by(|a, b| a.total_cmp(b));
     let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
-    format!("min {:.1}  median {:.1}  p95 {:.1}  max {:.1} ms", q(0.0), q(0.5), q(0.95), q(1.0))
+    format!(
+        "min {:.1}  median {:.1}  p95 {:.1}  max {:.1} ms",
+        q(0.0),
+        q(0.5),
+        q(0.95),
+        q(1.0)
+    )
 }
 
 fn report(det: &DetectStats, pol: &PolicyStats, dropped: u64, n_rows: u64, out: &std::path::Path) {
     eprintln!("\nwrote {n_rows} frames to {}", out.display());
-    eprintln!("frames: {} detected, {} camera frames dropped before detection", det.frames, dropped);
+    eprintln!(
+        "frames: {} detected, {} camera frames dropped before detection",
+        det.frames, dropped
+    );
     let mut ids: Vec<_> = det.with_tag.iter().collect();
     ids.sort();
     for (id, n) in ids {
-        eprintln!("  tag {id}: in {n} frames ({:.1}%)", 100.0 * *n as f64 / det.frames.max(1) as f64);
+        eprintln!(
+            "  tag {id}: in {n} frames ({:.1}%)",
+            100.0 * *n as f64 / det.frames.max(1) as f64
+        );
     }
-    eprintln!("  frame age on arrival (clock check): {}", quantiles(&mut det.age_ms.clone()));
+    eprintln!(
+        "  frame age on arrival (clock check): {}",
+        quantiles(&mut det.age_ms.clone())
+    );
     eprintln!("  detection: {}", quantiles(&mut det.detect_ms.clone()));
     eprintln!(
         "policy: acted on {} frames, skipped {} ({:.1}%) while busy",
@@ -680,7 +738,13 @@ fn report(det: &DetectStats, pol: &PolicyStats, dropped: u64, n_rows: u64, out: 
         pol.skipped,
         100.0 * pol.skipped as f64 / (pol.acted + pol.skipped).max(1) as f64
     );
-    eprintln!("  queued after detection: {}", quantiles(&mut pol.wait_ms.clone()));
+    eprintln!(
+        "  queued after detection: {}",
+        quantiles(&mut pol.wait_ms.clone())
+    );
     eprintln!("  inference: {}", quantiles(&mut pol.policy_ms.clone()));
-    eprintln!("  capture to send: {}", quantiles(&mut pol.delay_ms.clone()));
+    eprintln!(
+        "  capture to send: {}",
+        quantiles(&mut pol.delay_ms.clone())
+    );
 }

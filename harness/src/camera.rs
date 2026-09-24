@@ -73,7 +73,13 @@ pub fn is_packed_yuyv(buf: &Buffer) -> bool {
 
 /// Describes a camera format the way the programs print it.
 pub fn describe(f: &CameraFormat) -> String {
-    format!("{}x{} {:?} @ {} fps", f.width(), f.height(), f.format(), f.frame_rate())
+    format!(
+        "{}x{} {:?} @ {} fps",
+        f.width(),
+        f.height(),
+        f.format(),
+        f.frame_rate()
+    )
 }
 
 /// Opens the camera with the given AVFoundation unique id, [`Picked::id`],
@@ -83,7 +89,8 @@ pub fn open(camera_id: &str) -> Result<Camera> {
     let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
     let mut cam = Camera::new(CameraIndex::String(camera_id.to_string()), format)
         .with_context(|| format!("opening camera {camera_id}"))?;
-    cam.open_stream().with_context(|| format!("starting camera {camera_id}"))?;
+    cam.open_stream()
+        .with_context(|| format!("starting camera {camera_id}"))?;
     Ok(cam)
 }
 

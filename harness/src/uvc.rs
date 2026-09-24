@@ -94,8 +94,11 @@ impl Device {
     /// invocation: batching several `-s` flags into one call proved
     /// unreliable, with later writes silently dropped.
     fn set(&self, control: &str, value: &str) -> Result<()> {
-        run(&self.tool, &["-I", &self.index, "-s", &format!("{control}={value}")])
-            .with_context(|| format!("setting {control}={value}"))?;
+        run(
+            &self.tool,
+            &["-I", &self.index, "-s", &format!("{control}={value}")],
+        )
+        .with_context(|| format!("setting {control}={value}"))?;
         let got = self.get(control)?;
         if got != value {
             bail!("{control} would not take {value}; it reads {got}");
@@ -136,7 +139,9 @@ impl Device {
         let units = (applied.exposure_us / EXPOSURE_UNIT_US).to_string();
         match self.get("exposure-time-abs") {
             Ok(v) if v != units => {
-                return Some(format!("exposure changed from {units} to {v} (units of 100 us)"))
+                return Some(format!(
+                    "exposure changed from {units} to {v} (units of 100 us)"
+                ))
             }
             _ => {}
         }
@@ -171,7 +176,10 @@ fn find_tool() -> Result<PathBuf> {
     }
     // src/ -> harness/ -> the repository root
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent();
-    if let Some(p) = repo.map(|r| r.join("tools/bin/uvc-util")).filter(|p| p.is_file()) {
+    if let Some(p) = repo
+        .map(|r| r.join("tools/bin/uvc-util"))
+        .filter(|p| p.is_file())
+    {
         return Ok(p);
     }
     if let Ok(p) = which("uvc-util") {
