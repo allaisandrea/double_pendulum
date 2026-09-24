@@ -31,7 +31,7 @@ impl Intrinsics {
     }
 
     /// Projects a camera-frame point to pixels; `None` behind the camera.
-    pub fn project(&self, p: [f64; 3]) -> Option<[f64; 2]> {
+    pub(crate) fn project(&self, p: [f64; 3]) -> Option<[f64; 2]> {
         (p[2] > 1e-6).then(|| {
             [
                 self.fx * p[0] / p[2] + self.cx,
@@ -47,7 +47,7 @@ impl Intrinsics {
 #[derive(Clone, Copy, Debug)]
 pub struct Pose {
     /// Rotation taking tag-frame vectors into the camera frame, row-major.
-    pub r: [[f64; 3]; 3],
+    pub(crate) r: [[f64; 3]; 3],
     /// Tag centre in the camera frame, metres.
     pub t: [f64; 3],
     /// Object-space error of this solution.
@@ -56,7 +56,7 @@ pub struct Pose {
 
 impl Pose {
     /// Maps a tag-frame point into the camera frame.
-    pub fn apply(&self, p: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn apply(&self, p: [f64; 3]) -> [f64; 3] {
         let r = &self.r;
         std::array::from_fn(|i| r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2] + self.t[i])
     }

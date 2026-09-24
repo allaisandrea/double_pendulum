@@ -30,7 +30,7 @@ const EXPOSURE_UNIT_US: u32 = 100;
 /// What was asked for, and what the camera actually accepted.
 pub struct Applied {
     pub exposure_us: u32,
-    pub gain: Option<u16>,
+    gain: Option<u16>,
 }
 
 /// The camera as `uvc-util` sees it: its own index, which is unrelated to

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Position then orientation: x y z qw qx qy qz.
-pub const POSE_LEN: i32 = 7;
+const POSE_LEN: i32 = 7;
 
 /// One tag as seen in one frame.
 #[derive(Clone, Debug)]
@@ -70,7 +70,7 @@ fn pose_type() -> DataType {
     DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), POSE_LEN)
 }
 
-pub fn frames_schema(tag_ids: &[usize], metadata: HashMap<String, String>) -> SchemaRef {
+fn frames_schema(tag_ids: &[usize], metadata: HashMap<String, String>) -> SchemaRef {
     let mut fields = vec![Field::new(HEAD[0], DataType::UInt64, false)];
     fields.extend(HEAD[1..].iter().map(|n| Field::new(*n, duration(), false)));
     for id in tag_ids {
@@ -90,7 +90,7 @@ fn pose_builder() -> FixedSizeListBuilder<Float32Builder> {
         .with_field(Field::new("item", DataType::Float32, false))
 }
 
-pub fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
+fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
     let n_tags = (schema.fields().len() - HEAD.len() - TAIL.len()) / PER_TAG;
     let mut frame = UInt64Builder::new();
     let mut times: Vec<_> = (1..HEAD.len()).map(|_| DurationNanosecondBuilder::new()).collect();
@@ -148,33 +148,30 @@ pub fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
 }
 
-/// Buffers rows and writes them to an IPC stream in batches.
-pub struct Table<R> {
+/// Buffers frame rows and writes them to an IPC stream in batches.
+pub struct Table {
     schema: SchemaRef,
     writer: StreamWriter<BufWriter<File>>,
-    rows: Vec<R>,
-    batch: fn(&SchemaRef, &[R]) -> Result<RecordBatch>,
+    rows: Vec<FrameRow>,
     written: u64,
 }
 
-impl<R> Table<R> {
-    pub fn create(
-        path: &Path,
-        schema: SchemaRef,
-        batch: fn(&SchemaRef, &[R]) -> Result<RecordBatch>,
-    ) -> Result<Self> {
+impl Table {
+    /// Creates the frames table at `path`, with one column group per tag id
+    /// and `metadata` in its schema.
+    pub fn create(path: &Path, tag_ids: &[usize], metadata: HashMap<String, String>) -> Result<Self> {
+        let schema = frames_schema(tag_ids, metadata);
         let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
         let writer = StreamWriter::try_new(BufWriter::new(file), &schema)?;
         Ok(Self {
             schema,
             writer,
             rows: Vec::new(),
-            batch,
             written: 0,
         })
     }
 
-    pub fn push(&mut self, row: R) {
+    pub fn push(&mut self, row: FrameRow) {
         self.rows.push(row);
     }
 
@@ -183,7 +180,7 @@ impl<R> Table<R> {
         if self.rows.is_empty() {
             return Ok(());
         }
-        let batch = (self.batch)(&self.schema, &self.rows)?;
+        let batch = frames_batch(&self.schema, &self.rows)?;
         self.writer.write(&batch)?;
         self.writer.flush()?;
         self.written += self.rows.len() as u64;
@@ -243,8 +240,7 @@ mod tests {
         let meta = HashMap::from([("seed".to_string(), "1".to_string())]);
 
         let path = dir.join("frames.arrows");
-        let mut table =
-            Table::create(&path, frames_schema(&[0, 2], meta), frames_batch).unwrap();
+        let mut table = Table::create(&path, &[0, 2], meta).unwrap();
         let seen = TagRow {
             pose: [0.1, 0.2, 0.9, 1.0, 0.0, 0.0, 0.0],
             err: 1e-6,

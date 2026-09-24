@@ -333,11 +333,7 @@ fn main() -> Result<()> {
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
-    let frames = Table::create(
-        &out.join("frames.arrows"),
-        record::frames_schema(&args.tags, meta),
-        record::frames_batch,
-    )?;
+    let frames = Table::create(&out.join("frames.arrows"), &args.tags, meta)?;
     let (row_tx, row_rx) = mpsc::channel::<FrameRow>();
     let logger = thread::Builder::new()
         .name("logger".into())
@@ -643,7 +639,7 @@ fn raise_priority() {
 
 /// Writes the frames table, a batch about once a second, until the policy
 /// thread hangs up.
-fn log_loop(rx: Receiver<FrameRow>, mut frames: Table<FrameRow>) -> Result<u64> {
+fn log_loop(rx: Receiver<FrameRow>, mut frames: Table) -> Result<u64> {
     let mut next_flush = Instant::now() + Duration::from_secs(1);
     loop {
         match rx.recv_timeout(next_flush.saturating_duration_since(Instant::now())) {

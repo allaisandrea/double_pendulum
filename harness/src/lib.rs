@@ -6,7 +6,7 @@
 pub mod camera;
 pub mod clock;
 pub mod detect;
-pub mod draw;
+mod draw;
 pub mod mailbox;
 pub mod mov;
 pub mod overlay;

@@ -45,7 +45,7 @@ impl<T> Latest<T> {
     }
 
     /// Puts `item` in the slot. Returns true if it replaced one nobody took.
-    pub fn put(&self, item: T) -> bool {
+    pub(crate) fn put(&self, item: T) -> bool {
         let replaced = self.state.lock().unwrap().value.replace(item);
         self.ready.notify_one();
         // Dropped here, outside the lock: a frame is megabytes.
@@ -68,7 +68,7 @@ impl<T> Latest<T> {
 
     /// Tells the consumer no more items will come. One still waiting is
     /// delivered first.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.state.lock().unwrap().closed = true;
         self.ready.notify_all();
     }
