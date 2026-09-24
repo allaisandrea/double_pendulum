@@ -61,7 +61,7 @@ impl DutyCycle {
 /// It keeps no state: the walk continues from the previous frame's action,
 /// which is in the history, and each step is a hash of the seed and the
 /// frame number rather than a draw from a running generator.
-pub struct RandomWalk {
+pub struct RandomWalkPolicy {
     pub seed: u64,
     pub range: i8,
     pub step: u8,
@@ -69,7 +69,7 @@ pub struct RandomWalk {
     pub duty: DutyCycle,
 }
 
-impl RandomWalk {
+impl RandomWalkPolicy {
     /// The action for `now` given the previous frame's action, without the
     /// simulated latency.
     fn decide(&self, now: &Step, prev: i8) -> i8 {
@@ -90,7 +90,7 @@ impl RandomWalk {
     }
 }
 
-impl Policy for RandomWalk {
+impl Policy for RandomWalkPolicy {
     fn act(&mut self, history: &[Step; HISTORY_LENGTH]) -> i8 {
         wait(self.latency);
         let prev = history[1]
@@ -155,8 +155,8 @@ mod tests {
         }
     }
 
-    fn walk(range: i8, step: u8, duty: DutyCycle) -> RandomWalk {
-        RandomWalk {
+    fn walk(range: i8, step: u8, duty: DutyCycle) -> RandomWalkPolicy {
+        RandomWalkPolicy {
             seed: 1,
             range,
             step,
@@ -172,7 +172,7 @@ mod tests {
 
     /// Runs the walk over `n` frames 8 ms apart, feeding each action back.
     /// As in `collect`, the first frames only fill the history, at 0.
-    fn run(p: &mut RandomWalk, n: u64) -> Vec<i8> {
+    fn run(p: &mut RandomWalkPolicy, n: u64) -> Vec<i8> {
         let warmup = HISTORY_LENGTH as u64 - 1;
         // Newest first, like the policy's input.
         let mut history: Vec<Step> = (0..warmup)

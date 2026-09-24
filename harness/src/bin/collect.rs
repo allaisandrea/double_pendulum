@@ -19,7 +19,7 @@ use clap::Parser;
 use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::clock::mono;
 use harness::latest::{Latest, Take};
-use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY_LENGTH};
+use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step, HISTORY_LENGTH};
 use harness::table::{self, FrameRow, Table, TagRow};
 use harness::tag_detector::{Intrinsics, TagDetector};
 use harness::{serial, uvc};
@@ -235,7 +235,7 @@ fn main() -> Result<()> {
         active: Duration::from_secs_f64(args.active_s),
         rest: Duration::from_secs_f64(args.rest_s),
     };
-    let policy = RandomWalk {
+    let policy = RandomWalkPolicy {
         seed,
         range: args.policy_range as i8,
         step: args.policy_step,
