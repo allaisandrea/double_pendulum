@@ -9,7 +9,7 @@ pub mod detect;
 mod draw;
 pub mod latest;
 pub mod mov;
-pub mod overlay;
+pub mod overlay_tag;
 pub mod policy;
 pub mod record;
 pub mod serial;

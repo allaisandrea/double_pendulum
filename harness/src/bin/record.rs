@@ -14,7 +14,7 @@ use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
 use harness::detect::{Intrinsics, Pixels, Tag, Tracker};
 use harness::latest::{Latest, Take};
 use harness::mov::MovWriter;
-use harness::{overlay, uvc, yuyv};
+use harness::{overlay_tag, uvc, yuyv};
 use clap::Parser;
 use image::RgbImage;
 use nokhwa::pixel_format::RgbFormat;
@@ -398,7 +398,7 @@ fn render_loop(args: &Args, rx: Receiver<Detected>, path: &Path) -> Result<u64> 
                 d.buf.decode_image::<RgbFormat>()?
             };
             for tag in &d.tags {
-                overlay::draw_tag(&mut img, tag, &d.k, args.tag_size);
+                overlay_tag::draw_tag(&mut img, tag, &d.k, args.tag_size);
             }
 
             let (w16, h16) = (u16::try_from(w)?, u16::try_from(h)?);
