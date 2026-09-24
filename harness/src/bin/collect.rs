@@ -15,13 +15,13 @@
 //! For now the policy is a stand-in, a random walk; see `policy.rs`.
 
 use anyhow::{anyhow, bail, Context, Result};
-use apriltag_cam::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
-use apriltag_cam::clock::mono;
-use apriltag_cam::detect::{Intrinsics, Pixels, Tracker};
-use apriltag_cam::mailbox::{Latest, Take};
-use apriltag_cam::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
-use apriltag_cam::record::{self, FrameRow, Table, TagRow};
-use apriltag_cam::{serial, uvc};
+use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
+use harness::clock::mono;
+use harness::detect::{Intrinsics, Pixels, Tracker};
+use harness::mailbox::{Latest, Take};
+use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
+use harness::record::{self, FrameRow, Table, TagRow};
+use harness::{serial, uvc};
 use clap::Parser;
 use nokhwa::pixel_format::RgbFormat;
 use std::collections::{HashMap, VecDeque};

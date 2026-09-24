@@ -10,11 +10,11 @@
 //! is recorded, stamped with its capture time so playback runs in real time.
 
 use anyhow::{anyhow, bail, Context, Result};
-use apriltag_cam::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
-use apriltag_cam::detect::{Intrinsics, Pixels, Tag, Tracker};
-use apriltag_cam::mailbox::{Latest, Take};
-use apriltag_cam::mov::MovWriter;
-use apriltag_cam::{overlay, uvc, yuyv};
+use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
+use harness::detect::{Intrinsics, Pixels, Tag, Tracker};
+use harness::mailbox::{Latest, Take};
+use harness::mov::MovWriter;
+use harness::{overlay, uvc, yuyv};
 use clap::Parser;
 use image::RgbImage;
 use nokhwa::pixel_format::RgbFormat;
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[command(version, about)]
 struct Args {
     /// Output video (QuickTime, Motion-JPEG); a CSV of detections is written
-    /// alongside it [default: recordings/apriltag-<unix time>.mov]
+    /// alongside it [default: recordings/video-<unix time>.mov]
     #[arg(long)]
     out: Option<PathBuf>,
 
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        PathBuf::from(format!("recordings/apriltag-{secs}.mov"))
+        PathBuf::from(format!("recordings/video-{secs}.mov"))
     });
     if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

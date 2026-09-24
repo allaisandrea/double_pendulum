@@ -4,7 +4,7 @@
 # ///
 """Checks a recording made by `collect` for internal consistency.
 
-    uv run apriltag-cam/check_recording.py recordings/<unix time>
+    uv run harness/check_recording.py recordings/<unix time>
 
 Exits non-zero if anything is inconsistent. Checks, on frames.arrows:
   - frame numbers increase, and each row's times are in pipeline order:

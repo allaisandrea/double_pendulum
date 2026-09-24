@@ -21,7 +21,7 @@
 // <some change so we can call this 0.10.4>
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
-// PATCH (apriltag-cam): cargo caps lints for crates from the registry; as a
+// PATCH (harness): cargo caps lints for crates from the registry; as a
 // path dependency this crate's upstream warnings would flood every build.
 #![allow(warnings)]
 
@@ -459,7 +459,7 @@ mod internal {
 
                 unsafe { CVPixelBufferUnlockBaseAddress(image_buffer, 0) };
 
-                // PATCH (apriltag-cam): report the presentation timestamp as
+                // PATCH (harness): report the presentation timestamp as
                 // is, in nanoseconds on the mach_absolute_time clock (the
                 // same clock as CLOCK_UPTIME_RAW), instead of converting it
                 // to Unix wall-clock time. The conversion re-read the wall
@@ -595,7 +595,7 @@ mod internal {
         Telephoto,
         TrueDepth,
         External,
-        // PATCH (apriltag-cam): what external cameras are up to macOS 13.
+        // PATCH (harness): what external cameras are up to macOS 13.
         ExternalUnknown,
     }
 
@@ -634,7 +634,7 @@ mod internal {
             <*mut Object>::from(self)
         }
 
-        /// PATCH (apriltag-cam): the types every discovery session asks for.
+        /// PATCH (harness): the types every discovery session asks for.
         /// Listing cameras and opening one by index must see the same devices
         /// in the same order; upstream used two different lists. This is the
         /// listing's original set plus `ExternalUnknown`, so external cameras
@@ -1056,7 +1056,7 @@ mod internal {
                         let max_fps: f64 = unsafe { msg_send![range.inner, maxFrameRate] };
                         // Older Apple cameras (i.e. iMac 2013) return 29.97000002997 as FPS.
                         if (f64::from(descriptor.frame_rate()) - max_fps).abs() < 0.999 {
-                            // PATCH (apriltag-cam): take the format and the range
+                            // PATCH (harness): take the format and the range
                             // together, from the first format of the right size
                             // that supports the frame rate. Upstream overwrote the
                             // format with every one of the right size, so a camera

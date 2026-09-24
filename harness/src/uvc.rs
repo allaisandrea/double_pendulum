@@ -169,7 +169,7 @@ fn find_tool() -> Result<PathBuf> {
         }
         bail!("UVC_UTIL is set to {}, which is not a file", p.display());
     }
-    // src/ -> apriltag-cam/ -> the repository root
+    // src/ -> harness/ -> the repository root
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent();
     if let Some(p) = repo.map(|r| r.join("tools/bin/uvc-util")).filter(|p| p.is_file()) {
         return Ok(p);

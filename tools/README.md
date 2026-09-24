@@ -59,5 +59,6 @@ restores its defaults. That happened mid-session here — the kernel logged
 metering automatically, so recordings made afterwards had no fixed exposure
 and nothing said so.
 
-`apriltag-cam --exposure-us` does all of this, including re-checking
-afterwards; prefer it over setting the controls by hand before a recording.
+`record` and `collect` in `harness/` do all of this with `--exposure-us`,
+including re-checking afterwards; prefer them over setting the controls by
+hand before a recording.

@@ -1,19 +1,20 @@
-# apriltag-cam
+# harness
 
-Tracks the pendulum's AprilTags through a USB camera. Two programs:
+The laptop side of the pendulum rig: it tracks the pendulum's AprilTags
+through a USB camera and drives the motor. Two programs:
 
-- **`apriltag-cam`** records what the camera sees: a Motion-JPEG `.mov` with
+- **`record`** records what the camera sees: a Motion-JPEG `.mov` with
   each tag's pose drawn on it, and a CSV with one row per detection.
 - **`collect`** drives the motor while recording tag poses and the actions
   sent, on one clock, as training data for RL. See [collect](#collect-rl-training-data).
 
 ```sh
 cargo build
-./target/debug/apriltag-cam                  # Ctrl-C to stop
-./target/debug/apriltag-cam --duration 60
+./target/debug/record                        # Ctrl-C to stop
+./target/debug/record --duration 60
 ```
 
-Output lands in `recordings/apriltag-<unix time>.mov` unless `--out` says
+Output lands in `recordings/video-<unix time>.mov` unless `--out` says
 otherwise; the CSV takes the same name with a `.csv` extension.
 
 ## Setting up a machine
@@ -24,7 +25,7 @@ scripts. From the repository root:
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new shell
 make -C tools                                     # uvc-util, needed to fix the exposure
-cargo build --manifest-path apriltag-cam/Cargo.toml
+cargo build --manifest-path harness/Cargo.toml
 ```
 
 Verified on an M4 MacBook Air with macOS 15, 2026-09-23. The camera shows up
@@ -113,7 +114,7 @@ tag 2 about 99%.
   and 1 miss most, and they are the ones that can pass behind a link.
 
 **Throughput.** The camera delivers 1280×800 at 120 fps, and both programs
-keep up: `apriltag-cam` records about 116 fps (3 ms median detection), and
+keep up: `record` records about 116 fps (3 ms median detection), and
 `collect` detects every frame at about 5 ms median with 2 threads. The
 capture thread keeps only the newest frame, so if detection ever falls
 behind, frames are dropped rather than queued, and the spacing becomes
@@ -166,9 +167,9 @@ and the Uno running `arduino/arduino.ino`, with the shield's 12 V supply on.
 From the repository root:
 
 ```sh
-./apriltag-cam/target/debug/collect --duration 300                   # ±60: 20 s on, 5 s rest
-./apriltag-cam/target/debug/collect --policy-range 0 --duration 20   # everything but motion
-uv run apriltag-cam/check_recording.py recordings/<unix time>
+./harness/target/debug/collect --duration 300                   # ±60: 20 s on, 5 s rest
+./harness/target/debug/collect --policy-range 0 --duration 20   # everything but motion
+uv run harness/check_recording.py recordings/<unix time>
 uv run analysis/recall.py recordings/<unix time>
 ```
 

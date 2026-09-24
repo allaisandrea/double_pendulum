@@ -1,7 +1,7 @@
 # nokhwa-bindings-macos 0.2.4, patched
 
 Vendored from crates.io and swapped in with `[patch.crates-io]` in
-`apriltag-cam/Cargo.toml`. Apache-2.0: the published crate omits its license
+`harness/Cargo.toml`. Apache-2.0: the published crate omits its license
 file, so `LICENSE` is copied from the nokhwa crate it belongs to.
 
 ## Why
@@ -24,7 +24,7 @@ the first matching frame-rate range. The SK-C201 webcam offers 1920x1080 at
 
 ## Change
 
-Search `src/lib.rs` for `PATCH (apriltag-cam)`:
+Search `src/lib.rs` for `PATCH (harness)`:
 
 - adds `AVCaptureDeviceType::ExternalUnknown`;
 - adds `AVCaptureDeviceType::all()`, used by both discovery sessions: the

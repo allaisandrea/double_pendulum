@@ -1,5 +1,6 @@
-//! Camera capture and AprilTag pose estimation shared by the binaries:
-//! `apriltag-cam`, which records annotated video, and `collect`, which
+//! The laptop side of the double pendulum rig: camera capture, AprilTag pose
+//! estimation, the policy interface and the motor link, shared by the
+//! binaries `record`, which records annotated video, and `collect`, which
 //! records RL training data while driving the motor.
 
 pub mod camera;

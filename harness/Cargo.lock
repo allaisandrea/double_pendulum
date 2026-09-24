@@ -104,26 +104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "apriltag-cam"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "apriltag",
- "arrow-array",
- "arrow-ipc",
- "arrow-schema",
- "clap",
- "ctrlc",
- "image",
- "jpeg-encoder",
- "libc",
- "mach2",
- "nokhwa",
- "rand",
- "serialport",
-]
-
-[[package]]
 name = "apriltag-sys"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -754,6 +734,26 @@ dependencies = [
  "crunchy",
  "num-traits",
  "zerocopy",
+]
+
+[[package]]
+name = "harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apriltag",
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "clap",
+ "ctrlc",
+ "image",
+ "jpeg-encoder",
+ "libc",
+ "mach2",
+ "nokhwa",
+ "rand",
+ "serialport",
 ]
 
 [[package]]
