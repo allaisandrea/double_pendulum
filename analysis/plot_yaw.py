@@ -42,7 +42,11 @@ def yaw_deg(pose):
 
 
 def load(run):
-    with ipc.open_stream(run / "observations.arrows") as reader:
+    # frames.arrows; recordings before 2026-09-24 have observations.arrows.
+    path = run / "frames.arrows"
+    if not path.exists():
+        path = run / "observations.arrows"
+    with ipc.open_stream(path) as reader:
         obs = reader.read_all()
     meta = {k.decode(): v.decode() for k, v in obs.schema.metadata.items()}
     t = np.array(obs["t_capture"].cast("int64").to_pylist()) / 1e9
@@ -56,14 +60,18 @@ def load(run):
 
 def rest_spans(meta, lo, hi):
     """(start, end) seconds of the policy's rest periods within [lo, hi]."""
-    active, rest = int(meta.get("active_slots", 1)), int(meta.get("rest_slots", 0))
+    if "active_ns" in meta:
+        active, rest = int(meta["active_ns"]) / 1e9, int(meta["rest_ns"]) / 1e9
+    else:  # before 2026-09-24: in slots of the old action grid
+        period = int(meta["period_ns"]) / 1e9
+        active = int(meta.get("active_slots", 1)) * period
+        rest = int(meta.get("rest_slots", 0)) * period
     if not rest:
         return []
-    period = int(meta["period_ns"]) / 1e9
-    cycle = (active + rest) * period
+    cycle = active + rest
     spans, start = [], np.floor(lo / cycle) * cycle
     while start < hi:
-        a, b = start + active * period, start + cycle
+        a, b = start + active, start + cycle
         if b > lo and a < hi:
             spans.append((max(a, lo), min(b, hi)))
         start += cycle

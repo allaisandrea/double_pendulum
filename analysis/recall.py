@@ -34,12 +34,20 @@ from pathlib import Path
 import numpy as np
 import pyarrow.ipc as ipc
 
-# Settings that distinguish runs in a parameter sweep, printed per run.
-SETTINGS = ["exposure_us", "gain", "decimate", "plan_every_ns", "seed"]
+# Settings that distinguish runs in a parameter sweep, printed per run, when
+# the recording has them.
+SETTINGS = ["exposure_us", "gain", "decimate", "policy_range", "policy_step",
+            "policy_latency_ns", "plan_every_ns", "seed"]
+
+
+def table_path(run):
+    """frames.arrows; recordings before 2026-09-24 have observations.arrows."""
+    new = run / "frames.arrows"
+    return new if new.exists() else run / "observations.arrows"
 
 
 def load(run):
-    with ipc.open_stream(run / "observations.arrows") as reader:
+    with ipc.open_stream(table_path(run)) as reader:
         obs = reader.read_all()
     meta = {k.decode(): v.decode() for k, v in obs.schema.metadata.items()}
     t = np.array(obs["t_capture"].cast("int64").to_pylist())
@@ -76,12 +84,17 @@ def edge_distance(poses, meta):
 
 
 def active_mask(t, meta):
-    """True for frames captured while the policy was active, by slot."""
-    active, rest = int(meta.get("active_slots", 1)), int(meta.get("rest_slots", 0))
+    """True for frames captured while the policy was active. Recordings
+    before 2026-09-24 give the cycle in slots of the old action grid."""
+    if "active_ns" in meta:
+        active, rest = int(meta["active_ns"]), int(meta["rest_ns"])
+    else:
+        period = int(meta["period_ns"])
+        active = int(meta.get("active_slots", 1)) * period
+        rest = int(meta.get("rest_slots", 0)) * period
     if not rest:
         return np.ones(len(t), dtype=bool)
-    slot = t // int(meta["period_ns"])
-    return slot % (active + rest) < active
+    return t % (active + rest) < active
 
 
 def chunk_stats(seen, chunks):

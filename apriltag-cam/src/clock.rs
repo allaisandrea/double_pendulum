@@ -16,12 +16,3 @@ pub fn mono() -> Duration {
     assert_eq!(rc, 0, "clock_gettime(CLOCK_UPTIME_RAW) failed");
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
-
-/// Sleeps until `deadline` on the monotonic clock; returns at once if it has
-/// already passed.
-pub fn sleep_until(deadline: Duration) {
-    let now = mono();
-    if deadline > now {
-        std::thread::sleep(deadline - now);
-    }
-}

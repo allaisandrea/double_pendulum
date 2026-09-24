@@ -6,10 +6,10 @@ pub mod camera;
 pub mod clock;
 pub mod detect;
 pub mod draw;
-pub mod grid;
 pub mod mailbox;
 pub mod mov;
 pub mod overlay;
+pub mod policy;
 pub mod record;
 pub mod serial;
 #[cfg(test)]

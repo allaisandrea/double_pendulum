@@ -86,7 +86,8 @@ that come with these controls.
 ## Detection: what the numbers look like
 
 Measured 2026-09-23 on the M4, with `collect` driving the arm (`--policy-range
-60`, seed 1) for 2 minutes per setting. Recall is over the policy's active
+60`, seed 1) for 2 minutes per setting, under the stand-in policy of the time:
+a new random action every 80 ms. Recall is over the policy's active
 periods; at rest it is 99–100% for every tag at the defaults.
 
 **Frames with all three tags detected**, lamp to the side:
@@ -176,63 +177,70 @@ USB power and answers `ready mdd10` without it, so everything looks fine
 from the laptop. Both ERR LEDs lit on the shield means undervoltage: the
 12 V supply is off or unplugged.
 
-**Two loops on a fixed grid.** Slot k starts at `t0 + k × period` (20 ms).
-One loop takes each frame (or one every `--plan-every-ms`, if set), detects
-tags, and asks the policy for a chunk of actions (8), which starts at the
-first slot at least `--offset-ms` (60) after the frame's capture time. The
-other, a real-time executor, wakes at each slot boundary and writes one
-byte. A newer plan takes over from its own first slot; until then the
-previous plan keeps the slots in between. A slot no plan covers is a
-**gap** and gets 0. Planning on every frame, 120 a second, most plans are
-superseded after their first action or two. This costs nothing here: the
-executor's worst lateness stays under 0.1 ms. On the old two-core laptop it
-stalled the executor, which is why `--plan-every-ms` exists; frames between
-plans are not detected, so they are missing from the observations.
+**Three threads, no clock to wait on.**
 
-**The stand-in policy** holds one random action in ±`--policy-range` (60)
-for each `--hold-ms` (80) block of slots. The action is a hash of `--seed`
-(recorded) and the block, so it does not depend on the planning rate, and
-the same seed sends the same action in the same slot on every run. The
-double pendulum is chaotic, so the arm's path still differs from run to run,
-but repeat runs give matching recall. At ±30 the arm barely swings, because the
-direction flips every block or two and the pushes cancel; ±60 gives
-vigorous motion. The firmware caps duty at ±80. The policy runs for
-`--active-s` (20), then rests for `--rest-s` (5) sending zeros, and repeats,
-so one recording holds both driven motion and the arm settling. At zero
-duty the shield brakes the motor: the arm settles damped, not free.
+    capture -> [newest frame wins] -> detect -> [every detection] -> policy -> serial
+                                                                       \-> frames.arrows
 
-**Output**: `recordings/<unix time>/observations.arrows` and `actions.arrows`,
-Arrow IPC streams. A stream is readable up to its last batch even after a
-crash, and batches are written about once a second. Read them with
-`pyarrow.ipc.open_stream` or `polars.read_ipc_stream`. Times are
-`Duration(ns)` relative to t0; run parameters are in the schema metadata.
+Capture drains the camera and keeps only the newest frame, so detection
+never works on a stale one. Detection passes every result on. The policy
+thread takes everything that has arrived, acts on the newest frame, and
+writes one byte to the motor at once. Frames that arrived while it was busy
+are **skipped**: they still go into its history and the table, with the
+action that was in effect. With 7 ms of simulated inference, detection at
+about 5 ms and a frame every 8.3 ms, nothing is skipped and the motor gets
+a new command 27 ms after capture (median; 31 ms at p95). The previous
+design queued each command for a fixed 60 ms.
 
-| observations | |
+If frames stop arriving, the last command stays in force until the
+firmware's watchdog zeroes it, 300 ms after the last byte. When `collect`
+stops, the policy thread sends a final zero.
+
+**The policy** is anything implementing `Policy` in `src/policy.rs`. It gets
+the current frame and the two before it, newest first: each frame's number,
+capture time since t0, one pose per tag (none when unseen), and the action
+in effect after it (none for the current frame). It returns one action.
+
+**The stand-in policy** is a random walk: each frame the action moves by a
+step drawn uniformly from ±`--policy-step` (10), reflecting at
+±`--policy-range` (60). It takes about 3·(range/step)² frames to wander from
+0 to a limit, about 0.9 s at the defaults. It keeps no state: the walk
+continues from the previous frame's action, which is in the history, and
+each step is a hash of `--seed` (recorded) and the frame number. It spends
+`--policy-latency-ms` (7) per call, standing in for inference; a plain sleep
+overshoots by a quarter or more on macOS, so it sleeps most of the time and
+spins for the last millisecond. It runs for `--active-s` (20), then rests
+for `--rest-s` (5) sending zeros, and repeats, so one recording holds both
+driven motion and the arm settling. The cycle runs on capture time since
+t0. At zero duty the shield brakes the motor: the arm settles damped, not
+free. The firmware caps duty at ±80.
+
+**Output**: `recordings/<unix time>/frames.arrows`, an Arrow IPC stream,
+one row per frame that went through detection. A stream is readable up to
+its last batch even after a crash, and batches are written about once a
+second. Read it with `pyarrow.ipc.open_stream` or `polars.read_ipc_stream`.
+Times are `Duration(ns)` relative to t0, which is taken just before the
+camera starts; run parameters are in the schema metadata.
+
+| column | |
 | --- | --- |
-| `frame` | camera sequence number |
-| `t_capture`, `t_detected` | sensor capture, poses ready |
+| `frame` | camera sequence number; a jump means frames dropped before detection |
+| `t_capture`, `t_arrival` | sensor capture, frame reached the program |
+| `t_detect_start`, `t_detected` | detection ran |
 | `tag{id}_pose` | `[x, y, z, qw, qx, qy, qz]`, f32, null when unseen; qw ≥ 0 |
 | `tag{id}_err`, `_alt_err`, `_margin` | pose quality; `alt_err` flags the ambiguous poses |
-| `t_policy`, `t_plan` | policy invoked, plan available |
-| `k_start`, `plan` | the plan's first slot, and all of its actions |
-
-| actions | |
-| --- | --- |
-| `slot` | its time is `slot × period` |
-| `action` | the byte sent |
-| `frame`, `index` | which plan supplied it, and where in it; null for a gap |
+| `acted` | whether the policy acted on this frame, or skipped it while busy |
+| `t_policy_start`, `t_policy_done`, `t_sent` | policy ran, action written; null when skipped |
+| `action` | the action in effect after this frame |
 
 While it runs, `collect` prints a status line every `--status-every-s` (10):
-frames and how often each tag was seen, slots with their gaps, skips and late
-writes, late plans, and whether the policy is active or resting.
-
-A slot missing from `actions` was skipped because the executor fell more than
-a slot behind; the board kept the previous action through it. The final
-summary reports that, the executor's lateness against the grid, how early plans
-arrived before their first slot (tune `--offset-ms` with it), and each frame's
-age on arrival, which doubles as a check that the camera's timestamps are on
-the same clock. The first few slots of every run are gaps, before the first
-plan can arrive.
+frames and how often each tag was seen, actions sent and frames skipped, the
+slowest detection and the slowest capture-to-send, and whether the policy is
+active or resting. The final summary adds each frame's age on arrival,
+which doubles as a check that the camera's timestamps are on the same clock,
+and the time frames spent queued, in inference, and from capture to send.
+The first frames after the camera starts can arrive a few hundred ms late;
+they are recorded with their true times.
 
 If the Uno speaks after its ready line, it has reset, so `collect` stops and
 reports the recording as unreliable.

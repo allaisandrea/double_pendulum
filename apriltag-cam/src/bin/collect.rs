@@ -1,35 +1,30 @@
 //! Records RL training data: tag poses from the camera, and the actions a
 //! policy sends to the motor, on one monotonic clock.
 //!
-//! Two loops share a fixed action grid (slot k starts at t0 + k * period):
+//!   capture -> [newest frame wins] -> detect -> [every detection] -> policy -> serial
+//!                                                                      \-> logger
 //!
-//!   capture -> [1 slot, newest wins] -> perceive+policy -> [schedule] -> executor -> serial
-//!                                              \-- rows --> logger <-- rows --/
+//! Capture drains the camera and keeps only the newest frame, so detection
+//! never works on a stale one. Detection passes every result on. The policy
+//! thread takes everything that has arrived, acts on the newest frame, and
+//! writes the action to the motor at once. Frames it skipped while busy go
+//! into its history and the table all the same, with the action that was in
+//! effect. Nothing waits on a clock: an action goes out as soon as it is
+//! ready, and its send time is recorded.
 //!
-//! perceive+policy plans every --plan-every-ms: it takes a fresh frame,
-//! detects tags, asks the policy for a chunk of actions, and schedules it to
-//! start at a fixed offset after the frame's capture time. By default it
-//! plans on every frame, 120 a second, so each observation is recorded; a
-//! newer plan takes over from its first slot, so most plans play only their
-//! first action or two. The executor wakes at every slot boundary, takes the action
-//! the schedule assigns to that slot, and writes it as one byte. Neither loop
-//! touches the disk: the logger writes both tables.
-//!
-//! For now the policy is a stand-in that holds one random action for each
-//! block of --hold-ms, chosen from the seed and the block alone, so the
-//! motion does not depend on how often plans are made or when they land.
+//! For now the policy is a stand-in, a random walk; see `policy.rs`.
 
 use anyhow::{anyhow, bail, Context, Result};
 use apriltag_cam::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Captured};
-use apriltag_cam::clock::{self, mono};
+use apriltag_cam::clock::mono;
 use apriltag_cam::detect::{Intrinsics, Pixels, Tracker};
-use apriltag_cam::grid::{Grid, Pick, Plan, Schedule};
 use apriltag_cam::mailbox::{Latest, Take};
-use apriltag_cam::record::{self, ActRow, ObsRow, Table, TagRow};
+use apriltag_cam::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
+use apriltag_cam::record::{self, FrameRow, Table, TagRow};
 use apriltag_cam::{serial, uvc};
 use clap::Parser;
 use nokhwa::pixel_format::RgbFormat;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -49,40 +44,25 @@ struct Args {
     #[arg(long)]
     duration: Option<f64>,
 
-    /// Grid period: one action per slot, in milliseconds
-    #[arg(long, default_value_t = 20)]
-    period_ms: u64,
-
-    /// Actions per plan
-    #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u16).range(1..=255))]
-    chunk: u16,
-
-    /// A plan starts at the first slot at least this long after the capture
-    /// time of the frame it was computed from, in milliseconds
-    #[arg(long, default_value_t = 60)]
-    offset_ms: u64,
-
-    /// Plan this often, in milliseconds; 0 plans on every frame. Each plan
-    /// then plays about this long before the next takes over. Frames between
-    /// plans are not detected, so they are missing from the observations
-    #[arg(long, default_value_t = 0)]
-    plan_every_ms: u64,
-
-    /// Stand-in policy: each block of --hold-ms repeats one action drawn
-    /// uniformly from -range..=range. 0 sends only zeros, so nothing moves
+    /// Stand-in policy: the action walks within -range..=range. 0 sends only
+    /// zeros, so nothing moves
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u8).range(0..=127))]
     policy_range: u8,
 
-    /// Stand-in policy: how long each random action is held, in
-    /// milliseconds, rounded to whole slots. Blocks sit on the slot grid, so
-    /// the same seed sends the same action in the same slot on every run,
-    /// whatever --plan-every-ms is
-    #[arg(long, default_value_t = 80)]
-    hold_ms: u64,
+    /// Stand-in policy: each frame the action moves by a step drawn
+    /// uniformly from -step..=step. It takes about 3 * (range / step)^2
+    /// frames to wander from 0 to a limit
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(0..=127))]
+    policy_step: u8,
+
+    /// Stand-in policy: simulated inference time per action, in
+    /// milliseconds; the camera delivers a frame every 8.3 ms
+    #[arg(long, default_value_t = 7.0)]
+    policy_latency_ms: f64,
 
     /// The stand-in policy is on for this long, then rests (all zeros) for
     /// --rest-s, and repeats, so one recording holds both driven motion and
-    /// the arm settling afterwards. Seconds, on the slot grid from t0
+    /// the arm settling afterwards. Seconds of capture time from t0
     #[arg(long, default_value_t = 20.0)]
     active_s: f64,
 
@@ -151,7 +131,7 @@ struct Args {
     cy: Option<f64>,
 
     /// Detector threads. Two keep up with 120 fps on the M4 (about 5 ms a
-    /// frame) and leave the other cores to the executor
+    /// frame) and leave the other cores to the policy
     #[arg(long, default_value_t = 2)]
     threads: u8,
 
@@ -172,26 +152,27 @@ impl Args {
     }
 }
 
-enum Row {
-    Obs(ObsRow),
-    Act(ActRow),
+/// A frame through detection, on its way to the policy thread.
+struct Detected {
+    frame: u64,
+    t_capture: Duration,
+    t_arrival: Duration,
+    t_detect_start: Duration,
+    t_detected: Duration,
+    tags: Vec<Option<TagRow>>,
 }
 
-/// Counters both loops bump as they go, read by the periodic status line.
-/// Atomics, so the executor never waits on a lock or allocates for them.
+/// Counters the threads bump as they go, read by the periodic status line.
 struct Live {
     frames: AtomicU64,
     /// Frames each recorded tag was seen in, in `--tags` order.
     tags: Vec<AtomicU64>,
-    late_plans: AtomicU64,
-    slots: AtomicU64,
-    gaps: AtomicU64,
+    acted: AtomicU64,
     skipped: AtomicU64,
-    late_writes: AtomicU64,
-    /// Worst write lateness and slowest detection since the last status
+    /// Slowest detection and slowest capture-to-send since the last status
     /// line, in microseconds; the status line resets them.
-    worst_write_us: AtomicU64,
     slowest_detect_us: AtomicU64,
+    slowest_send_us: AtomicU64,
 }
 
 impl Live {
@@ -199,13 +180,10 @@ impl Live {
         Self {
             frames: AtomicU64::new(0),
             tags: (0..n_tags).map(|_| AtomicU64::new(0)).collect(),
-            late_plans: AtomicU64::new(0),
-            slots: AtomicU64::new(0),
-            gaps: AtomicU64::new(0),
+            acted: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
-            late_writes: AtomicU64::new(0),
-            worst_write_us: AtomicU64::new(0),
             slowest_detect_us: AtomicU64::new(0),
+            slowest_send_us: AtomicU64::new(0),
         }
     }
 
@@ -214,11 +192,8 @@ impl Live {
         Counts {
             frames: get(&self.frames),
             tags: self.tags.iter().map(get).collect(),
-            late_plans: get(&self.late_plans),
-            slots: get(&self.slots),
-            gaps: get(&self.gaps),
+            acted: get(&self.acted),
             skipped: get(&self.skipped),
-            late_writes: get(&self.late_writes),
         }
     }
 }
@@ -227,11 +202,8 @@ impl Live {
 struct Counts {
     frames: u64,
     tags: Vec<u64>,
-    late_plans: u64,
-    slots: u64,
-    gaps: u64,
+    acted: u64,
     skipped: u64,
-    late_writes: u64,
 }
 
 /// One line covering the interval since `prev`.
@@ -243,95 +215,37 @@ fn status_line(live: &Live, prev: &Counts, now: &Counts, elapsed: Duration, phas
         .zip(&prev.tags)
         .map(|(n, p)| format!("{:.0}", 100.0 * (n - p) as f64 / frames.max(1) as f64))
         .collect();
-    let us = |a: &AtomicU64| a.swap(0, Ordering::Relaxed) as f64 / 1e3;
+    let ms = |a: &AtomicU64| a.swap(0, Ordering::Relaxed) as f64 / 1e3;
     format!(
-        "[{:5.0} s]{phase} {frames} frames, tags {}% | {} slots: {} gaps, {} skipped, \
-         {} late (worst {:.1} ms) | {} late plans, slowest detection {:.0} ms",
+        "[{:5.0} s]{phase} {frames} frames, tags {}% | {} actions, {} frames skipped | \
+         slowest detection {:.0} ms, slowest capture to send {:.0} ms",
         elapsed.as_secs_f64(),
         tags.join("/"),
-        now.slots - prev.slots,
-        now.gaps - prev.gaps,
+        now.acted - prev.acted,
         now.skipped - prev.skipped,
-        now.late_writes - prev.late_writes,
-        us(&live.worst_write_us),
-        now.late_plans - prev.late_plans,
-        us(&live.slowest_detect_us),
+        ms(&live.slowest_detect_us),
+        ms(&live.slowest_send_us),
     )
-}
-
-/// Stand-in for a real policy: one random action per block of `hold`
-/// slots, except in the slots that fall in a rest period.
-///
-/// The action is a hash of the seed and the block, not a draw from a
-/// running generator, so a slot's action does not depend on how many plans
-/// came before it. With a stateful generator, the planning rate would set
-/// how often the action changes, and timing jitter would shift which slots
-/// each draw lands on from one run to the next.
-struct FakePolicy {
-    seed: u64,
-    range: i8,
-    hold: i64,
-    chunk: usize,
-    duty: DutyCycle,
-}
-
-impl FakePolicy {
-    fn plan(&self, k_start: i64) -> Vec<i8> {
-        (k_start..k_start + self.chunk as i64).map(|k| self.action(k)).collect()
-    }
-
-    fn action(&self, slot: i64) -> i8 {
-        if self.duty.resting(slot) {
-            return 0;
-        }
-        let block = slot.div_euclid(self.hold) as u64;
-        let h = splitmix64(self.seed ^ splitmix64(block));
-        let span = 2 * self.range as u64 + 1;
-        (h % span) as i8 - self.range
-    }
-}
-
-/// A 64-bit mixing function (SplitMix64's finaliser): nearby inputs give
-/// unrelated outputs, and it is fixed here, independent of any crate.
-fn splitmix64(x: u64) -> u64 {
-    let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
-/// Alternating active and rest periods, measured in slots from slot 0.
-/// Deciding per slot, not per plan, makes a rest start exactly on time even
-/// when a chunk straddles the boundary.
-#[derive(Clone, Copy, Debug)]
-struct DutyCycle {
-    active: i64,
-    rest: i64,
-}
-
-impl DutyCycle {
-    fn new(active_s: f64, rest_s: f64, period: Duration) -> Self {
-        let slots = |s: f64| (s / period.as_secs_f64()).round() as i64;
-        Self {
-            active: slots(active_s).max(1),
-            rest: slots(rest_s).max(0),
-        }
-    }
-
-    fn resting(&self, slot: i64) -> bool {
-        self.rest > 0 && slot.rem_euclid(self.active + self.rest) >= self.active
-    }
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let period = Duration::from_millis(args.period_ms);
-    let offset = Duration::from_millis(args.offset_ms);
-    anyhow::ensure!(period > Duration::ZERO, "--period-ms must be positive");
     let seed = args.seed.unwrap_or_else(rand::random);
-    anyhow::ensure!(args.active_s > 0.0 && args.rest_s >= 0.0, "--active-s must be positive, --rest-s not negative");
-    let duty = DutyCycle::new(args.active_s, args.rest_s, period);
-    let hold = ((args.hold_ms as f64 / args.period_ms as f64).round() as i64).max(1);
+    anyhow::ensure!(
+        args.active_s > 0.0 && args.rest_s >= 0.0 && args.policy_latency_ms >= 0.0,
+        "--active-s must be positive; --rest-s and --policy-latency-ms not negative"
+    );
+    let duty = DutyCycle {
+        active: Duration::from_secs_f64(args.active_s),
+        rest: Duration::from_secs_f64(args.rest_s),
+    };
+    let policy = RandomWalk {
+        seed,
+        range: args.policy_range as i8,
+        step: args.policy_step,
+        latency: Duration::from_secs_f64(args.policy_latency_ms / 1e3),
+        duty,
+    };
 
     let out = args.out.clone().unwrap_or_else(|| {
         let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -373,6 +287,10 @@ fn main() -> Result<()> {
         None
     };
 
+    // Every timestamp is recorded relative to t0, before the first frame.
+    let t0 = mono();
+    let wall_t0 = SystemTime::now().duration_since(UNIX_EPOCH)?;
+
     let dropped = Arc::new(AtomicU64::new(0));
     let slot = Arc::new(Latest::new());
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -387,16 +305,7 @@ fn main() -> Result<()> {
     let k = args.intrinsics(format.width(), format.height());
     eprintln!("camera: {} ({})", cam.name, camera::describe(&format));
 
-    // Slot 0 starts shortly from now, once everything is running.
-    let t0 = mono() + Duration::from_millis(300);
-    let grid = Grid { t0, period };
-    let wall_t0 = SystemTime::now().duration_since(UNIX_EPOCH)? + (t0 - mono());
-
     let meta: HashMap<String, String> = [
-        ("period_ns", period.as_nanos().to_string()),
-        ("offset_ns", offset.as_nanos().to_string()),
-        ("chunk_len", args.chunk.to_string()),
-        ("plan_every_ns", Duration::from_millis(args.plan_every_ms).as_nanos().to_string()),
         ("t0_mono_ns", t0.as_nanos().to_string()),
         ("t0_unix_ns", wall_t0.as_nanos().to_string()),
         ("clock", "CLOCK_UPTIME_RAW (mach_absolute_time), ns".into()),
@@ -410,11 +319,13 @@ fn main() -> Result<()> {
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
-        ("policy", "fake: one uniform random action per block of hold_slots, from a hash of seed and block; zero while resting".into()),
-        ("hold_slots", hold.to_string()),
+        ("history", HISTORY.to_string()),
+        ("policy", policy.describe()),
         ("policy_range", args.policy_range.to_string()),
-        ("active_slots", duty.active.to_string()),
-        ("rest_slots", duty.rest.to_string()),
+        ("policy_step", args.policy_step.to_string()),
+        ("policy_latency_ns", policy.latency.as_nanos().to_string()),
+        ("active_ns", duty.active.as_nanos().to_string()),
+        ("rest_ns", duty.rest.as_nanos().to_string()),
         ("seed", seed.to_string()),
         ("board", serial::READY.into()),
     ]
@@ -422,22 +333,16 @@ fn main() -> Result<()> {
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
-    let observations = Table::create(
-        &out.join("observations.arrows"),
-        record::observations_schema(&args.tags, meta.clone()),
-        record::observations_batch,
+    let frames = Table::create(
+        &out.join("frames.arrows"),
+        record::frames_schema(&args.tags, meta),
+        record::frames_batch,
     )?;
-    let actions = Table::create(
-        &out.join("actions.arrows"),
-        record::actions_schema(meta),
-        record::actions_batch,
-    )?;
-    let (row_tx, row_rx) = mpsc::channel::<Row>();
+    let (row_tx, row_rx) = mpsc::channel::<FrameRow>();
     let logger = thread::Builder::new()
         .name("logger".into())
-        .spawn(move || log_loop(row_rx, observations, actions))?;
+        .spawn(move || log_loop(row_rx, frames))?;
 
-    let schedule = Arc::new(Mutex::new(Schedule::default()));
     let live = Arc::new(Live::new(args.tags.len()));
 
     let reset = Arc::new(AtomicBool::new(false));
@@ -450,41 +355,31 @@ fn main() -> Result<()> {
             .spawn(move || serial::watch(port, &stop, &reset, &heard))?
     };
 
-    let perceive = {
-        let (args, stop, schedule, rows, live) =
-            (args.clone(), stop.clone(), schedule.clone(), row_tx.clone(), live.clone());
-        let policy = FakePolicy {
-            seed,
-            range: args.policy_range as i8,
-            hold,
-            chunk: args.chunk as usize,
-            duty,
-        };
+    let (det_tx, det_rx) = mpsc::channel::<Detected>();
+    let detect = {
+        let (args, stop, live) = (args.clone(), stop.clone(), live.clone());
         thread::Builder::new()
-            .name("perceive".into())
-            .spawn(move || {
-                perceive_loop(&args, k, grid, offset, &slot, policy, &schedule, &rows, &live, &stop)
-            })?
+            .name("detect".into())
+            .spawn(move || detect_loop(&args, k, &slot, det_tx, &live, &stop))?
     };
 
-    let executor = {
-        let (stop, schedule, rows, live) =
-            (stop.clone(), schedule.clone(), row_tx.clone(), live.clone());
+    let act = {
+        let (stop, live) = (stop.clone(), live.clone());
         thread::Builder::new()
-            .name("executor".into())
-            .spawn(move || execute_loop(grid, port, &schedule, &rows, &live, &stop))?
+            .name("policy".into())
+            .spawn(move || policy_loop(Box::new(policy), det_rx, port, t0, row_tx, &live, &stop))?
     };
-    drop(row_tx); // the logger finishes once both loops have dropped theirs
 
-    let cycle = if duty.rest > 0 {
-        format!("{} s on, {} s rest", args.active_s, args.rest_s)
-    } else {
+    let cycle = if duty.rest.is_zero() {
         "always on".to_string()
+    } else {
+        format!("{} s on, {} s rest", args.active_s, args.rest_s)
     };
     eprintln!(
-        "recording to {} (seed {seed}, policy ±{}, {cycle}); Ctrl-C to stop",
+        "recording to {} (seed {seed}, policy ±{} step {}, {cycle}); Ctrl-C to stop",
         out.display(),
-        args.policy_range
+        args.policy_range,
+        args.policy_step
     );
     let started = Instant::now();
     let mut abort = None;
@@ -497,10 +392,10 @@ fn main() -> Result<()> {
     while !stop.load(Ordering::Relaxed) {
         if !status_every.is_zero() && Instant::now() >= next_status {
             let now = live.snapshot();
-            let phase = match grid.slot_at(mono()) {
-                Some(k) if duty.rest > 0 && duty.resting(k) => " resting |",
-                Some(_) if duty.rest > 0 => " active  |",
-                _ => "",
+            let phase = match duty.rest.is_zero() {
+                true => "",
+                false if duty.resting(mono() - t0) => " resting |",
+                false => " active  |",
             };
             eprintln!("{}", status_line(&live, &prev, &now, started.elapsed(), phase));
             prev = now;
@@ -517,17 +412,17 @@ fn main() -> Result<()> {
             ));
             break;
         }
-        if executor.is_finished() || perceive.is_finished() || logger.is_finished() {
+        if act.is_finished() || detect.is_finished() || logger.is_finished() {
             break; // a thread failed; the joins below say why
         }
         thread::sleep(Duration::from_millis(50));
     }
     stop.store(true, Ordering::SeqCst);
 
-    // The executor first: it writes a final zero, so the motor stops before
-    // anything else winds down.
-    let exec = executor.join().map_err(|_| anyhow!("executor panicked"))?;
-    let perc = perceive.join().map_err(|_| anyhow!("perceive thread panicked"))?;
+    // The policy thread first: it writes a final zero, so the motor stops
+    // before anything else winds down.
+    let acted = act.join().map_err(|_| anyhow!("policy thread panicked"))?;
+    let detected = detect.join().map_err(|_| anyhow!("detect thread panicked"))?;
     let logged = logger.join().map_err(|_| anyhow!("logger panicked"))?;
     let _ = watcher.join();
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -535,10 +430,10 @@ fn main() -> Result<()> {
         thread::sleep(Duration::from_millis(10));
     }
 
-    let exec = exec.context("executor")?;
-    let perc = perc.context("perception")?;
-    let (n_obs, n_act) = logged.context("writing the recording")?;
-    report(&exec, &perc, dropped.load(Ordering::Relaxed), n_obs, n_act, &out);
+    let acted = acted.context("policy")?;
+    let detected = detected.context("detection")?;
+    let n_rows = logged.context("writing the recording")?;
+    report(&detected, &acted, dropped.load(Ordering::Relaxed), n_rows, &out);
     if let Some((dev, applied)) = &exposure {
         if let Some(what) = dev.drift(applied) {
             eprintln!("warning: exposure did not hold during this recording: {what}");
@@ -551,47 +446,28 @@ fn main() -> Result<()> {
 }
 
 #[derive(Default)]
-struct PerceiveStats {
+struct DetectStats {
     frames: u64,
-    before_t0: u64,
     with_tag: HashMap<usize, u64>,
     detect_ms: Vec<f64>,
     /// How old each frame was when it arrived: arrival minus capture.
     age_ms: Vec<f64>,
-    /// How long before its first slot each plan was ready; negative = late.
-    lead_ms: Vec<f64>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn perceive_loop(
+/// Detects tags in the newest frame, over and over, and passes every result
+/// to the policy thread.
+fn detect_loop(
     args: &Args,
     k: Intrinsics,
-    grid: Grid,
-    offset: Duration,
     slot: &Latest<Captured>,
-    policy: FakePolicy,
-    schedule: &Mutex<Schedule>,
-    rows: &Sender<Row>,
+    to_policy: Sender<Detected>,
     live: &Live,
     stop: &AtomicBool,
-) -> Result<PerceiveStats> {
+) -> Result<DetectStats> {
     let mut tracker = Tracker::new(&args.family, args.threads, args.decimate, args.tag_size, k)?;
-    let mut stats = PerceiveStats::default();
-    let ns = |t: Duration| record::rel_ns(t, grid.t0);
-    let every = Duration::from_millis(args.plan_every_ms);
-    let mut next_plan = grid.t0;
+    let mut stats = DetectStats::default();
 
     while !stop.load(Ordering::Relaxed) {
-        if !every.is_zero() {
-            // Plan on a fixed cadence from t0; after an overrun, resume at
-            // the next tick rather than catching up.
-            clock::sleep_until(next_plan);
-            let now = mono();
-            while next_plan <= now {
-                next_plan += every;
-            }
-        }
-        // The newest frame, at most a camera period old.
         let cap = match slot.take(Duration::from_millis(100)) {
             Take::Item(cap) => cap,
             Take::Timeout => continue,
@@ -600,17 +476,11 @@ fn perceive_loop(
         let t_capture = cap
             .t_capture
             .ok_or_else(|| anyhow!("frame {} has no capture timestamp", cap.seq))?;
-        if t_capture < grid.t0 {
-            // Too early to record: try again at once rather than a tick later.
-            stats.before_t0 += 1;
-            next_plan = mono();
-            continue;
-        }
         stats.age_ms.push((cap.t_arrival.as_secs_f64() - t_capture.as_secs_f64()) * 1e3);
 
         let res = cap.buf.resolution();
         let (w, h) = (res.width() as usize, res.height() as usize);
-        let started = mono();
+        let t_detect_start = mono();
         let tags = if is_packed_yuyv(&cap.buf) {
             tracker.detect(w, h, Pixels::Yuyv(cap.buf.buffer()))?
         } else {
@@ -619,10 +489,10 @@ fn perceive_loop(
         };
         let t_detected = mono();
         stats.frames += 1;
-        stats.detect_ms.push((t_detected - started).as_secs_f64() * 1e3);
+        stats.detect_ms.push((t_detected - t_detect_start).as_secs_f64() * 1e3);
         live.frames.fetch_add(1, Ordering::Relaxed);
         live.slowest_detect_us
-            .fetch_max((t_detected - started).as_micros() as u64, Ordering::Relaxed);
+            .fetch_max((t_detected - t_detect_start).as_micros() as u64, Ordering::Relaxed);
 
         let tag_rows: Vec<Option<TagRow>> = args
             .tags
@@ -642,192 +512,114 @@ fn perceive_loop(
             })
             .collect();
 
-        let t_policy = mono();
-        let k_start = grid.k_start(t_capture, offset);
-        let actions = policy.plan(k_start);
-        let plan = Arc::new(Plan {
+        let sent = to_policy.send(Detected {
             frame: cap.seq,
-            k_start,
-            actions: actions.clone(),
-        });
-        schedule.lock().unwrap().push(plan);
-        let t_plan = mono();
-        let lead_ms = (grid.slot_time(k_start.max(0)).as_secs_f64() - t_plan.as_secs_f64()) * 1e3;
-        stats.lead_ms.push(lead_ms);
-        if lead_ms < 0.0 {
-            live.late_plans.fetch_add(1, Ordering::Relaxed);
-        }
-
-        let _ = rows.send(Row::Obs(ObsRow {
-            frame: cap.seq,
-            t_capture: ns(t_capture),
-            t_detected: ns(t_detected),
+            t_capture,
+            t_arrival: cap.t_arrival,
+            t_detect_start,
+            t_detected,
             tags: tag_rows,
-            t_policy: Some(ns(t_policy)),
-            t_plan: Some(ns(t_plan)),
-            k_start: Some(k_start),
-            plan: Some(actions),
-        }));
+        });
+        if sent.is_err() {
+            break; // the policy thread has stopped
+        }
     }
     Ok(stats)
 }
 
-/// Lateness histogram bin width, and how far it reaches.
-const LATE_BIN: Duration = Duration::from_micros(100);
-const LATE_BINS: usize = 1000;
-/// Writes later than this are reported as they happen.
-const LATE_WARN: Duration = Duration::from_millis(5);
-
-struct ExecStats {
-    scheduling: &'static str,
-    slots: u64,
-    gaps: u64,
-    late: u64,
+#[derive(Default)]
+struct PolicyStats {
+    acted: u64,
     skipped: u64,
-    worst: Duration,
-    /// Lateness in LATE_BIN steps; the last bin collects everything beyond.
-    hist: Box<[u64; LATE_BINS + 1]>,
+    /// Detection done to policy start: time spent queued.
+    wait_ms: Vec<f64>,
+    /// Policy start to action ready.
+    policy_ms: Vec<f64>,
+    /// Capture to the action written: the command delay.
+    delay_ms: Vec<f64>,
 }
 
-impl ExecStats {
-    fn quantile(&self, q: f64) -> Duration {
-        let n: u64 = self.hist.iter().sum();
-        let target = (n as f64 * q).ceil() as u64;
-        let mut seen = 0;
-        for (i, c) in self.hist.iter().enumerate() {
-            seen += c;
-            if seen >= target.max(1) {
-                return LATE_BIN * i as u32;
-            }
-        }
-        Duration::ZERO
-    }
-}
-
-/// Real-time budget per slot: the executor needs microseconds (a lock, a
-/// one-byte write, a channel send), so 1 ms of CPU, done within 3 ms of
-/// waking, is generous. A thread that overruns its budget gets demoted.
-const RT_COMPUTATION: Duration = Duration::from_millis(1);
-const RT_CONSTRAINT: Duration = Duration::from_millis(3);
-
-/// Puts this thread under macOS's real-time scheduling, the policy audio
-/// software uses: every `period` it is promised `RT_COMPUTATION` of CPU
-/// within `RT_CONSTRAINT` of waking, ahead of ordinary threads at any
-/// priority. The machine pauses for tens of milliseconds now and then, and
-/// ordinary scheduling, even at the highest QoS, left the executor late
-/// through them. Falls back to the highest QoS if the kernel refuses.
-/// Returns which scheduling the thread got.
-fn make_realtime(period: Duration) -> &'static str {
-    use mach2::mach_time::{mach_timebase_info, mach_timebase_info_data_t};
-    use libc::thread_policy_t;
-    use mach2::thread_policy::{
-        thread_policy_set, thread_time_constraint_policy_data_t, THREAD_TIME_CONSTRAINT_POLICY,
-        THREAD_TIME_CONSTRAINT_POLICY_COUNT,
-    };
-
-    let mut tb = mach_timebase_info_data_t { numer: 0, denom: 0 };
-    // SAFETY: `tb` is a valid, writable struct for the call to fill.
-    unsafe { mach_timebase_info(&mut tb) };
-    let ticks = |d: Duration| (d.as_nanos() as u64 * tb.denom as u64 / tb.numer as u64) as u32;
-    let mut policy = thread_time_constraint_policy_data_t {
-        period: ticks(period),
-        computation: ticks(RT_COMPUTATION),
-        constraint: ticks(RT_CONSTRAINT),
-        preemptible: 1,
-    };
-    // SAFETY: the policy struct is the flavour's documented layout, and the
-    // count is its size in integer_t, as thread_policy_set expects. The
-    // thread's port is a send right we own, so it is released afterwards.
-    let kr = unsafe {
-        let thread = mach2::mach_init::mach_thread_self();
-        let kr = thread_policy_set(
-            thread,
-            THREAD_TIME_CONSTRAINT_POLICY,
-            &mut policy as *mut _ as thread_policy_t,
-            THREAD_TIME_CONSTRAINT_POLICY_COUNT,
-        );
-        mach2::mach_port::mach_port_deallocate(mach2::traps::mach_task_self(), thread);
-        kr
-    };
-    if kr == 0 {
-        return "real-time";
-    }
-    eprintln!("warning: real-time scheduling refused (kern_return {kr}); using the highest QoS");
-    // SAFETY: affects only the calling thread; no pointers involved.
-    let rc = unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0)
-    };
-    if rc == 0 {
-        "QoS user-interactive"
-    } else {
-        eprintln!("warning: could not raise the executor's priority either (error {rc})");
-        "default"
-    }
-}
-
-fn execute_loop(
-    grid: Grid,
+/// Takes every detection that has arrived, acts on the newest, and sends
+/// the action at once. The older ones were skipped while the policy was
+/// busy: they join the history, and the table, with the action in effect.
+fn policy_loop(
+    mut policy: Box<dyn Policy>,
+    from_detect: Receiver<Detected>,
     mut port: Box<dyn serialport::SerialPort>,
-    schedule: &Mutex<Schedule>,
-    rows: &Sender<Row>,
+    t0: Duration,
+    rows: Sender<FrameRow>,
     live: &Live,
     stop: &AtomicBool,
-) -> Result<ExecStats> {
-    let scheduling = make_realtime(grid.period);
-    let mut stats = ExecStats {
-        scheduling,
-        slots: 0,
-        gaps: 0,
-        late: 0,
-        skipped: 0,
-        worst: Duration::ZERO,
-        hist: Box::new([0; LATE_BINS + 1]),
+) -> Result<PolicyStats> {
+    raise_priority();
+    let mut stats = PolicyStats::default();
+    let ns = |t: Duration| record::rel_ns(t, t0);
+    let ms = |a: Duration, b: Duration| (b.as_secs_f64() - a.as_secs_f64()) * 1e3;
+    let step = |d: &Detected, action: Option<i8>| Step {
+        frame: d.frame,
+        t: d.t_capture.saturating_sub(t0),
+        poses: d.tags.iter().map(|t| t.as_ref().map(|t| t.pose)).collect(),
+        action,
     };
-    let mut k: i64 = 0;
+    let row = |d: Detected, action: i8, times: Option<[Duration; 3]>| FrameRow {
+        frame: d.frame,
+        t_capture: ns(d.t_capture),
+        t_arrival: ns(d.t_arrival),
+        t_detect_start: ns(d.t_detect_start),
+        t_detected: ns(d.t_detected),
+        tags: d.tags,
+        acted: times.is_some(),
+        t_policy_start: times.map(|t| ns(t[0])),
+        t_policy_done: times.map(|t| ns(t[1])),
+        t_sent: times.map(|t| ns(t[2])),
+        action,
+    };
+    // Earlier frames, oldest first, each with the action in effect after it.
+    let mut history: VecDeque<Step> = VecDeque::with_capacity(HISTORY);
+    let remember = |history: &mut VecDeque<Step>, s: Step| {
+        if history.len() == HISTORY - 1 {
+            history.pop_front();
+        }
+        history.push_back(s);
+    };
+    let mut current: i8 = 0;
+
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Relaxed) {
-            let deadline = grid.slot_time(k);
-            clock::sleep_until(deadline);
-            let now = mono();
-            // More than a slot behind: skip ahead rather than send a burst of
-            // stale actions. The board keeps the last duty meanwhile, and the
-            // skipped slots are missing from the actions table.
-            if let Some(current) = grid.slot_at(now).filter(|&c| c > k) {
-                stats.skipped += (current - k) as u64;
-                live.skipped.fetch_add((current - k) as u64, Ordering::Relaxed);
-                eprintln!("executor: skipped slots {k}..{current}, {:?} behind", now - deadline);
-                k = current;
-            }
-            let pick = schedule.lock().unwrap().pick(k);
-            serial::send(port.as_mut(), pick.action())?;
-            let late = mono().saturating_sub(grid.slot_time(k));
-
-            stats.slots += 1;
-            stats.worst = stats.worst.max(late);
-            live.slots.fetch_add(1, Ordering::Relaxed);
-            live.worst_write_us.fetch_max(late.as_micros() as u64, Ordering::Relaxed);
-            let bin = (late.as_nanos() / LATE_BIN.as_nanos()) as usize;
-            stats.hist[bin.min(LATE_BINS)] += 1;
-            if late > LATE_WARN {
-                stats.late += 1;
-                live.late_writes.fetch_add(1, Ordering::Relaxed);
-                eprintln!("executor: slot {k} written {late:?} late");
-            }
-            let (frame, index) = match pick {
-                Pick::Plan { frame, index, .. } => (Some(frame), Some(index)),
-                Pick::Gap => {
-                    stats.gaps += 1;
-                    live.gaps.fetch_add(1, Ordering::Relaxed);
-                    (None, None)
-                }
+            let first = match from_detect.recv_timeout(Duration::from_millis(100)) {
+                Ok(d) => d,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
             };
-            let _ = rows.send(Row::Act(ActRow {
-                slot: k,
-                action: pick.action(),
-                frame,
-                index,
-            }));
-            k += 1;
+            let mut waiting = vec![first];
+            waiting.extend(from_detect.try_iter());
+            let newest = waiting.pop().expect("at least the first");
+            for d in waiting {
+                stats.skipped += 1;
+                live.skipped.fetch_add(1, Ordering::Relaxed);
+                remember(&mut history, step(&d, Some(current)));
+                let _ = rows.send(row(d, current, None));
+            }
+
+            let t_policy_start = mono();
+            let input: Vec<Step> = std::iter::once(step(&newest, None))
+                .chain(history.iter().rev().cloned())
+                .collect();
+            let action = policy.act(&input);
+            let t_policy_done = mono();
+            serial::send(port.as_mut(), action)?;
+            let t_sent = mono();
+            current = action;
+
+            stats.acted += 1;
+            stats.wait_ms.push(ms(newest.t_detected, t_policy_start));
+            stats.policy_ms.push(ms(t_policy_start, t_policy_done));
+            stats.delay_ms.push(ms(newest.t_capture, t_sent));
+            live.acted.fetch_add(1, Ordering::Relaxed);
+            live.slowest_send_us
+                .fetch_max(t_sent.saturating_sub(newest.t_capture).as_micros() as u64, Ordering::Relaxed);
+            remember(&mut history, step(&newest, Some(action)));
+            let _ = rows.send(row(newest, action, Some([t_policy_start, t_policy_done, t_sent])));
         }
         Ok(())
     })();
@@ -837,27 +629,34 @@ fn execute_loop(
     Ok(stats)
 }
 
-/// Writes both tables, a batch about once a second, until both loops hang up.
-fn log_loop(
-    rx: Receiver<Row>,
-    mut observations: Table<ObsRow>,
-    mut actions: Table<ActRow>,
-) -> Result<(u64, u64)> {
+/// Runs the calling thread at the highest ordinary priority, so the policy
+/// keeps up when other work competes for the cores.
+fn raise_priority() {
+    // SAFETY: affects only the calling thread; no pointers involved.
+    let rc = unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0)
+    };
+    if rc != 0 {
+        eprintln!("warning: could not raise the policy thread's priority (error {rc})");
+    }
+}
+
+/// Writes the frames table, a batch about once a second, until the policy
+/// thread hangs up.
+fn log_loop(rx: Receiver<FrameRow>, mut frames: Table<FrameRow>) -> Result<u64> {
     let mut next_flush = Instant::now() + Duration::from_secs(1);
     loop {
         match rx.recv_timeout(next_flush.saturating_duration_since(Instant::now())) {
-            Ok(Row::Obs(r)) => observations.push(r),
-            Ok(Row::Act(r)) => actions.push(r),
+            Ok(r) => frames.push(r),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if Instant::now() >= next_flush {
-            observations.flush()?;
-            actions.flush()?;
+            frames.flush()?;
             next_flush += Duration::from_secs(1);
         }
     }
-    Ok((observations.finish()?, actions.finish()?))
+    frames.finish()
 }
 
 fn quantiles(v: &mut [f64]) -> String {
@@ -869,101 +668,23 @@ fn quantiles(v: &mut [f64]) -> String {
     format!("min {:.1}  median {:.1}  p95 {:.1}  max {:.1} ms", q(0.0), q(0.5), q(0.95), q(1.0))
 }
 
-fn report(
-    exec: &ExecStats,
-    perc: &PerceiveStats,
-    dropped: u64,
-    n_obs: u64,
-    n_act: u64,
-    out: &std::path::Path,
-) {
-    let mut perc_detect = perc.detect_ms.clone();
-    let mut perc_age = perc.age_ms.clone();
-    let mut perc_lead = perc.lead_ms.clone();
-    let late_plans = perc.lead_ms.iter().filter(|&&l| l < 0.0).count();
-    eprintln!("\nwrote {n_obs} observations and {n_act} actions to {}", out.display());
-    eprintln!(
-        "frames: {} detected, {} camera frames dropped, {} captured before t0",
-        perc.frames, dropped, perc.before_t0
-    );
-    let mut ids: Vec<_> = perc.with_tag.iter().collect();
+fn report(det: &DetectStats, pol: &PolicyStats, dropped: u64, n_rows: u64, out: &std::path::Path) {
+    eprintln!("\nwrote {n_rows} frames to {}", out.display());
+    eprintln!("frames: {} detected, {} camera frames dropped before detection", det.frames, dropped);
+    let mut ids: Vec<_> = det.with_tag.iter().collect();
     ids.sort();
     for (id, n) in ids {
-        eprintln!(
-            "  tag {id}: in {n} frames ({:.1}%)",
-            100.0 * *n as f64 / perc.frames.max(1) as f64
-        );
+        eprintln!("  tag {id}: in {n} frames ({:.1}%)", 100.0 * *n as f64 / det.frames.max(1) as f64);
     }
-    eprintln!("  frame age on arrival (clock check): {}", quantiles(&mut perc_age));
-    eprintln!("  detection: {}", quantiles(&mut perc_detect));
+    eprintln!("  frame age on arrival (clock check): {}", quantiles(&mut det.age_ms.clone()));
+    eprintln!("  detection: {}", quantiles(&mut det.detect_ms.clone()));
     eprintln!(
-        "plans: lead before first slot {}; {late_plans} late",
-        quantiles(&mut perc_lead)
+        "policy: acted on {} frames, skipped {} ({:.1}%) while busy",
+        pol.acted,
+        pol.skipped,
+        100.0 * pol.skipped as f64 / (pol.acted + pol.skipped).max(1) as f64
     );
-    eprintln!(
-        "executor ({}): {} slots, {} gaps, {} skipped, {} over {LATE_WARN:?} late; \
-         lateness p50 {:?} p99 {:?} worst {:?}",
-        exec.scheduling,
-        exec.slots,
-        exec.gaps,
-        exec.skipped,
-        exec.late,
-        exec.quantile(0.5),
-        exec.quantile(0.99),
-        exec.worst
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rests_start_and_end_exactly_on_their_slots() {
-        // 2 slots on, 3 off, at 20 ms per slot.
-        let d = DutyCycle::new(0.04, 0.06, Duration::from_millis(20));
-        let pattern: Vec<bool> = (0..10).map(|k| d.resting(k)).collect();
-        let (f, t) = (false, true);
-        assert_eq!(pattern, [f, f, t, t, t, f, f, t, t, t]);
-    }
-
-    #[test]
-    fn no_rest_means_always_on() {
-        let d = DutyCycle::new(1.0, 0.0, Duration::from_millis(20));
-        assert!((0..1000).all(|k| !d.resting(k)));
-    }
-
-    fn policy(hold: i64, duty: DutyCycle) -> FakePolicy {
-        FakePolicy { seed: 1, range: 30, hold, chunk: 8, duty }
-    }
-
-    #[test]
-    fn a_chunk_straddling_a_rest_is_zeroed_from_the_boundary() {
-        // One block covers slots 0..20; 5 slots on, 5 off.
-        let p = policy(20, DutyCycle::new(0.1, 0.1, Duration::from_millis(20)));
-        // Slots 3..11: on for 3 and 4, resting 5..=9, on again at 10.
-        let plan = p.plan(3);
-        let a = plan[0];
-        assert_ne!(a, 0, "seed 1 draws a non-zero action");
-        assert_eq!(plan, [a, a, 0, 0, 0, 0, 0, a]);
-    }
-
-    #[test]
-    fn actions_hold_for_a_block_on_the_grid_whatever_the_plan() {
-        let p = policy(4, DutyCycle::new(1e6, 0.0, Duration::from_millis(20)));
-        let a: Vec<i8> = (0..400).map(|k| p.action(k)).collect();
-        for b in a.chunks(4) {
-            assert!(b.iter().all(|&x| x == b[0]), "a block changed action: {b:?}");
-        }
-        // Overlapping plans agree on every slot they share.
-        for k in 0..390 {
-            assert_eq!(p.plan(k), a[k as usize..k as usize + 8]);
-        }
-        // Blocks differ from each other, and span the range.
-        let blocks: Vec<i8> = a.iter().step_by(4).copied().collect();
-        assert!(blocks.windows(2).any(|w| w[0] != w[1]));
-        assert!(blocks.iter().all(|x| (-30..=30).contains(x)));
-        let mean = blocks.iter().map(|&x| x as f64).sum::<f64>() / blocks.len() as f64;
-        assert!(mean.abs() < 5.0, "mean action {mean} is far from 0");
-    }
+    eprintln!("  queued after detection: {}", quantiles(&mut pol.wait_ms.clone()));
+    eprintln!("  inference: {}", quantiles(&mut pol.policy_ms.clone()));
+    eprintln!("  capture to send: {}", quantiles(&mut pol.delay_ms.clone()));
 }
