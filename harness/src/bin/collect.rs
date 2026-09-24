@@ -52,7 +52,7 @@ struct Args {
     /// Stand-in policy: each frame the action moves by a step drawn
     /// uniformly from -step..=step. It takes about 3 * (range / step)^2
     /// frames to wander from 0 to a limit
-    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(0..=127))]
+    #[arg(long, default_value_t = 40, value_parser = clap::value_parser!(u8).range(0..=127))]
     policy_step: u8,
 
     /// Stand-in policy: simulated inference time per action, in

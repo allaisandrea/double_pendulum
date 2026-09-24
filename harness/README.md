@@ -205,9 +205,9 @@ recording has that many frames; the earlier ones only fill its history, and
 the motor stays at 0. The length is recorded as `history` in the metadata.
 
 **The stand-in policy** is a random walk: each frame the action moves by a
-step drawn uniformly from ±`--policy-step` (10), reflecting at
+step drawn uniformly from ±`--policy-step` (40), reflecting at
 ±`--policy-range` (60). It takes about 3·(range/step)² frames to wander from
-0 to a limit, about 0.9 s at the defaults. It keeps no state: the walk
+0 to a limit, about 7 frames (60 ms) at the defaults. It keeps no state: the walk
 continues from the previous frame's action, which is in the history, and
 each step is a hash of `--seed` (recorded) and the frame number. It spends
 `--policy-latency-ms` (7) per call, standing in for inference; a plain sleep
