@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// One tag as seen in one frame.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TagRow {
     /// x y z in metres, then the quaternion w x y z with w >= 0.
     pub pose: [f32; 7],
@@ -40,8 +40,8 @@ pub struct FrameRow {
     pub t_arrival: i64,
     pub t_detect_start: i64,
     pub t_detected: i64,
-    /// One entry per recorded tag id, in the order of the schema's columns.
-    pub tags: Vec<Option<TagRow>>,
+    /// Tags 0, 1 and 2, by id.
+    pub tags: [Option<TagRow>; 3],
     /// Whether the policy acted on this frame. A frame that arrived while
     /// the policy was busy with an earlier one is skipped: its policy times
     /// are null and `action` is the one carried over.
@@ -63,14 +63,9 @@ pub struct Table {
 }
 
 impl Table {
-    /// Creates the frames table at `path`, with one column group per tag id
-    /// and `metadata` in its schema.
-    pub fn create(
-        path: &Path,
-        tag_ids: &[usize],
-        metadata: HashMap<String, String>,
-    ) -> Result<Self> {
-        let schema = frames_schema(tag_ids, metadata);
+    /// Creates the frames table at `path`, with `metadata` in its schema.
+    pub fn create(path: &Path, metadata: HashMap<String, String>) -> Result<Self> {
+        let schema = frames_schema(metadata);
         let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
         let writer = StreamWriter::try_new(BufWriter::new(file), &schema)?;
         Ok(Self {
@@ -145,7 +140,6 @@ const TAIL: [&str; 5] = [
     "t_sent",
     "action",
 ];
-const PER_TAG: usize = 4;
 
 fn duration() -> DataType {
     DataType::Duration(TimeUnit::Nanosecond)
@@ -158,10 +152,10 @@ fn pose_type() -> DataType {
     )
 }
 
-fn frames_schema(tag_ids: &[usize], metadata: HashMap<String, String>) -> SchemaRef {
+fn frames_schema(metadata: HashMap<String, String>) -> SchemaRef {
     let mut fields = vec![Field::new(HEAD[0], DataType::UInt64, false)];
     fields.extend(HEAD[1..].iter().map(|n| Field::new(*n, duration(), false)));
-    for id in tag_ids {
+    for id in 0..3 {
         fields.push(Field::new(format!("tag{id}_pose"), pose_type(), true));
         fields.push(Field::new(format!("tag{id}_err"), DataType::Float32, true));
         fields.push(Field::new(
@@ -190,25 +184,19 @@ fn pose_builder() -> FixedSizeListBuilder<Float32Builder> {
 }
 
 fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
-    let n_tags = (schema.fields().len() - HEAD.len() - TAIL.len()) / PER_TAG;
     let mut frame = UInt64Builder::new();
     let mut times: Vec<_> = (1..HEAD.len())
         .map(|_| DurationNanosecondBuilder::new())
         .collect();
-    let mut poses: Vec<_> = (0..n_tags).map(|_| pose_builder()).collect();
-    let mut errs: Vec<_> = (0..n_tags).map(|_| Float32Builder::new()).collect();
-    let mut alts: Vec<_> = (0..n_tags).map(|_| Float32Builder::new()).collect();
-    let mut margins: Vec<_> = (0..n_tags).map(|_| Float32Builder::new()).collect();
+    let mut poses: [_; 3] = std::array::from_fn(|_| pose_builder());
+    let mut errs: [_; 3] = std::array::from_fn(|_| Float32Builder::new());
+    let mut alts: [_; 3] = std::array::from_fn(|_| Float32Builder::new());
+    let mut margins: [_; 3] = std::array::from_fn(|_| Float32Builder::new());
     let mut acted = BooleanBuilder::new();
     let mut policy_times: Vec<_> = (0..3).map(|_| DurationNanosecondBuilder::new()).collect();
     let mut action = Int8Builder::new();
 
     for r in rows {
-        anyhow::ensure!(
-            r.tags.len() == n_tags,
-            "row has {} tags, schema {n_tags}",
-            r.tags.len()
-        );
         frame.append_value(r.frame);
         for (b, t) in
             times
@@ -248,7 +236,7 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
 
     let mut columns: Vec<ArrayRef> = vec![Arc::new(frame.finish())];
     columns.extend(times.iter_mut().map(|b| Arc::new(b.finish()) as ArrayRef));
-    for i in 0..n_tags {
+    for i in 0..3 {
         columns.push(Arc::new(poses[i].finish()));
         columns.push(Arc::new(errs[i].finish()));
         columns.push(Arc::new(alts[i].finish()));
@@ -287,7 +275,7 @@ mod tests {
         let meta = HashMap::from([("seed".to_string(), "1".to_string())]);
 
         let path = dir.join("frames.arrows");
-        let mut table = Table::create(&path, &[0, 2], meta).unwrap();
+        let mut table = Table::create(&path, meta).unwrap();
         let seen = TagRow {
             pose: [0.1, 0.2, 0.9, 1.0, 0.0, 0.0, 0.0],
             err: 1e-6,
@@ -300,7 +288,7 @@ mod tests {
             t_arrival: 10,
             t_detect_start: 11,
             t_detected: 12,
-            tags: vec![Some(seen.clone()), None],
+            tags: [Some(seen), None, None],
             acted: true,
             t_policy_start: Some(13),
             t_policy_done: Some(14),
@@ -314,7 +302,7 @@ mod tests {
             t_arrival: 31,
             t_detect_start: 32,
             t_detected: 40,
-            tags: vec![None, Some(seen)],
+            tags: [None, None, Some(seen)],
             acted: false,
             t_policy_start: None,
             t_policy_done: None,

@@ -17,9 +17,9 @@ pub struct Step {
     pub frame: u64,
     /// Capture time, since the recording's t0.
     pub t: Duration,
-    /// One pose per recorded tag, in `--tags` order: x y z in metres, then
+    /// Poses of tags 0, 1 and 2, by id: x y z in metres, then
     /// the quaternion w x y z with w >= 0. None when the tag was not seen.
-    pub poses: Vec<Option<[f32; 7]>>,
+    pub poses: [Option<[f32; 7]>; 3],
     /// The action in effect after this frame: the one the policy chose for
     /// it, or the one carried over if it was skipped. None for the frame
     /// being decided.
@@ -146,7 +146,7 @@ mod tests {
         Step {
             frame,
             t,
-            poses: vec![],
+            poses: [None; 3],
             action,
         }
     }

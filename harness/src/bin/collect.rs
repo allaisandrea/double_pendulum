@@ -97,10 +97,6 @@ struct Args {
     #[arg(long, default_value_t = 75)]
     gain: u16,
 
-    /// Tag ids to record, one column group each
-    #[arg(long, value_delimiter = ',', default_value = "0,1,2")]
-    tags: Vec<usize>,
-
     /// Edge of the tag's black square, in metres
     #[arg(long, default_value_t = 0.023)]
     tag_size: f64,
@@ -159,14 +155,15 @@ struct Detected {
     t_arrival: Duration,
     t_detect_start: Duration,
     t_detected: Duration,
-    tags: Vec<Option<TagRow>>,
+    /// Tags 0, 1 and 2, by id.
+    tags: [Option<TagRow>; 3],
 }
 
 /// Counters the threads bump as they go, read by the periodic status line.
 struct Live {
     frames: AtomicU64,
-    /// Frames each recorded tag was seen in, in `--tags` order.
-    tags: Vec<AtomicU64>,
+    /// Frames tags 0, 1 and 2 were each seen in.
+    tags: [AtomicU64; 3],
     acted: AtomicU64,
     skipped: AtomicU64,
     /// Slowest detection and slowest capture-to-send since the last status
@@ -176,10 +173,10 @@ struct Live {
 }
 
 impl Live {
-    fn new(n_tags: usize) -> Self {
+    fn new() -> Self {
         Self {
             frames: AtomicU64::new(0),
-            tags: (0..n_tags).map(|_| AtomicU64::new(0)).collect(),
+            tags: std::array::from_fn(|_| AtomicU64::new(0)),
             acted: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             slowest_detect_us: AtomicU64::new(0),
@@ -191,7 +188,7 @@ impl Live {
         let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
         Counts {
             frames: get(&self.frames),
-            tags: self.tags.iter().map(get).collect(),
+            tags: self.tags.each_ref().map(get),
             acted: get(&self.acted),
             skipped: get(&self.skipped),
         }
@@ -201,7 +198,7 @@ impl Live {
 #[derive(Default)]
 struct Counts {
     frames: u64,
-    tags: Vec<u64>,
+    tags: [u64; 3],
     acted: u64,
     skipped: u64,
 }
@@ -321,7 +318,7 @@ fn main() -> Result<()> {
             "tag_frame",
             "origin at tag centre, x right, y down, z into the tag".into(),
         ),
-        ("tags", format!("{:?}", args.tags)),
+        ("tags", "[0, 1, 2]".into()),
         ("tag_family", args.family.clone()),
         ("tag_size_m", args.tag_size.to_string()),
         (
@@ -349,13 +346,13 @@ fn main() -> Result<()> {
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
-    let frames = Table::create(&out.join("frames.arrows"), &args.tags, meta)?;
+    let frames = Table::create(&out.join("frames.arrows"), meta)?;
     let (row_tx, row_rx) = mpsc::channel::<FrameRow>();
     let logger = thread::Builder::new()
         .name("logger".into())
         .spawn(move || log_loop(row_rx, frames))?;
 
-    let live = Arc::new(Live::new(args.tags.len()));
+    let live = Arc::new(Live::new());
 
     let reset = Arc::new(AtomicBool::new(false));
     let heard = Arc::new(Mutex::new(Vec::new()));
@@ -397,10 +394,7 @@ fn main() -> Result<()> {
     let mut abort = None;
     let status_every = Duration::from_secs_f64(args.status_every_s.max(0.0));
     let mut next_status = started + status_every;
-    let mut prev = Counts {
-        tags: vec![0; args.tags.len()],
-        ..Counts::default()
-    };
+    let mut prev = Counts::default();
     while !stop.load(Ordering::Relaxed) {
         if !status_every.is_zero() && Instant::now() >= next_status {
             let now = live.snapshot();
@@ -474,7 +468,8 @@ fn main() -> Result<()> {
 #[derive(Default)]
 struct DetectStats {
     frames: u64,
-    with_tag: HashMap<usize, u64>,
+    /// Frames tags 0, 1 and 2 were each seen in.
+    with_tag: [u64; 3],
     detect_ms: Vec<f64>,
     /// How old each frame was when it arrived: arrival minus capture.
     age_ms: Vec<f64>,
@@ -527,23 +522,18 @@ fn detect_loop(
             Ordering::Relaxed,
         );
 
-        let tag_rows: Vec<Option<TagRow>> = args
-            .tags
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| {
-                let tag = tags.iter().find(|t| t.id == id)?;
-                let pose = tag.pose.as_ref()?;
-                *stats.with_tag.entry(id).or_default() += 1;
-                live.tags[i].fetch_add(1, Ordering::Relaxed);
-                Some(TagRow {
-                    pose: table::pose_row(pose.t, pose.quaternion()),
-                    err: pose.err as f32,
-                    alt_err: tag.alt_err.map(|e| e as f32),
-                    margin: tag.margin,
-                })
+        let tag_rows: [Option<TagRow>; 3] = std::array::from_fn(|id| {
+            let tag = tags.iter().find(|t| t.id == id)?;
+            let pose = tag.pose.as_ref()?;
+            stats.with_tag[id] += 1;
+            live.tags[id].fetch_add(1, Ordering::Relaxed);
+            Some(TagRow {
+                pose: table::pose_row(pose.t, pose.quaternion()),
+                err: pose.err as f32,
+                alt_err: tag.alt_err.map(|e| e as f32),
+                margin: tag.margin,
             })
-            .collect();
+        });
 
         let sent = to_policy.send(Detected {
             frame: frame.seq,
@@ -591,7 +581,7 @@ fn policy_loop(
     let step = |d: &Detected, action: Option<i8>| Step {
         frame: d.frame,
         t: d.t_capture.saturating_sub(t0),
-        poses: d.tags.iter().map(|t| t.as_ref().map(|t| t.pose)).collect(),
+        poses: d.tags.map(|t| t.map(|t| t.pose)),
         action,
     };
     let row = |d: Detected, action: i8, times: Option<[Duration; 3]>| FrameRow {
@@ -719,9 +709,7 @@ fn report(det: &DetectStats, pol: &PolicyStats, dropped: u64, n_rows: u64, out: 
         "frames: {} detected, {} camera frames dropped before detection",
         det.frames, dropped
     );
-    let mut ids: Vec<_> = det.with_tag.iter().collect();
-    ids.sort();
-    for (id, n) in ids {
+    for (id, n) in det.with_tag.iter().enumerate() {
         eprintln!(
             "  tag {id}: in {n} frames ({:.1}%)",
             100.0 * *n as f64 / det.frames.max(1) as f64
