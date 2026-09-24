@@ -2,10 +2,11 @@
 
 use crate::clock;
 use crate::latest::Latest;
-use anyhow::{anyhow, Context, Result};
-use nokhwa::pixel_format::RgbFormat;
+use anyhow::{anyhow, ensure, Context, Result};
+use nokhwa::pixel_format::YuyvFormat;
 use nokhwa::utils::{
     ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
+    Resolution,
 };
 use nokhwa::{Buffer, Camera};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -62,15 +63,6 @@ pub struct Frame {
     pub buf: Buffer,
 }
 
-/// Whether the frame is packed YUYV at its nominal size. nokhwa labels some
-/// other macOS layouts (NV12) YUYV too; the size check keeps those off the
-/// fast paths.
-pub fn is_packed_yuyv(buf: &Buffer) -> bool {
-    let res = buf.resolution();
-    buf.source_frame_format() == FrameFormat::YUYV
-        && buf.buffer().len() == 2 * res.width() as usize * res.height() as usize
-}
-
 /// Describes a camera format the way the programs print it.
 pub fn describe(f: &CameraFormat) -> String {
     format!(
@@ -83,12 +75,25 @@ pub fn describe(f: &CameraFormat) -> String {
 }
 
 /// Opens the camera with the given AVFoundation unique id, [`Picked::id`],
-/// at its highest resolution, and starts it streaming. Frames queue up from
-/// here on, so hand the camera to [`capture_loop`] soon after.
+/// in the rig's format, 1280x800 packed YUYV at 120 fps, and starts it
+/// streaming. Frames queue up from here on, so hand the camera to
+/// [`capture_loop`] soon after.
+///
+/// The macOS backend picks the device format by size and frame rate only,
+/// not by pixel layout, so this cannot promise YUYV frames by itself; the
+/// detector checks every frame's length against packed YUYV.
 pub fn open(camera_id: &str) -> Result<Camera> {
-    let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+    let wanted = CameraFormat::new(Resolution::new(1280, 800), FrameFormat::YUYV, 120);
+    let format = RequestedFormat::new::<YuyvFormat>(RequestedFormatType::Exact(wanted));
     let mut cam = Camera::new(CameraIndex::String(camera_id.to_string()), format)
-        .with_context(|| format!("opening camera {camera_id}"))?;
+        .with_context(|| format!("opening camera {camera_id} as {}", describe(&wanted)))?;
+    let got = cam.camera_format();
+    ensure!(
+        got == wanted,
+        "camera {camera_id} opened as {}, not {}",
+        describe(&got),
+        describe(&wanted)
+    );
     cam.open_stream()
         .with_context(|| format!("starting camera {camera_id}"))?;
     Ok(cam)

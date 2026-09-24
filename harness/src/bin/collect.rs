@@ -16,14 +16,13 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
+use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::clock::mono;
 use harness::latest::{Latest, Take};
 use harness::policy::{DutyCycle, Policy, RandomWalk, Step, HISTORY};
 use harness::table::{self, FrameRow, Table, TagRow};
-use harness::tag_detector::{Intrinsics, Pixels, TagDetector};
+use harness::tag_detector::{Intrinsics, TagDetector};
 use harness::{serial, uvc};
-use nokhwa::pixel_format::RgbFormat;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -505,12 +504,7 @@ fn detect_loop(
         let res = frame.buf.resolution();
         let (w, h) = (res.width() as usize, res.height() as usize);
         let t_detect_start = mono();
-        let tags = if is_packed_yuyv(&frame.buf) {
-            detector.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
-        } else {
-            let rgb = frame.buf.decode_image::<RgbFormat>()?;
-            detector.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
-        };
+        let tags = detector.detect(w, h, frame.buf.buffer())?;
         let t_detected = mono();
         stats.frames += 1;
         stats

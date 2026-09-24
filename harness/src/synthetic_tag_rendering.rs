@@ -42,6 +42,17 @@ fn mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
 }
 
+/// A rendered image as packed YUYV, the only layout the detector takes.
+/// Renders are gray, so luma is any one channel and chroma is neutral.
+pub fn to_yuyv(img: &RgbImage) -> Vec<u8> {
+    img.as_raw()
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .flat_map(|p| [p[0], 128, p[3], 128])
+        .collect()
+}
+
 /// Ray-traces the tag, black square `tag_size` metres across, posed by
 /// `pose` (tag frame: centre origin, x right, y down, z into the tag), over
 /// a mid-grey background, with 3x3 supersampling.

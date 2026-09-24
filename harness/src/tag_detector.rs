@@ -77,15 +77,6 @@ pub struct Tag {
     pub alt_err: Option<f64>,
 }
 
-/// Frame pixels, in the layouts the detector can take luma from.
-pub enum Pixels<'a> {
-    /// Packed 4:2:2, Y0 U Y1 V: luma is every other byte, so detection
-    /// needs no colour conversion at all.
-    Yuyv(&'a [u8]),
-    /// Packed 8-bit RGB.
-    Rgb(&'a [u8]),
-}
-
 pub struct TagDetector {
     detector: Detector,
     /// Reused between frames; apriltag wants its own stride-aligned buffer.
@@ -121,12 +112,11 @@ impl TagDetector {
         })
     }
 
-    pub fn detect(&mut self, w: usize, h: usize, pixels: Pixels) -> Result<Vec<Tag>> {
+    /// Detects tags in a `w` x `h` frame of packed 4:2:2 YUYV (Y0 U Y1 V):
+    /// luma is every other byte, so detection needs no colour conversion.
+    pub fn detect(&mut self, w: usize, h: usize, yuyv: &[u8]) -> Result<Vec<Tag>> {
         let gray = gray_image(&mut self.gray, w, h)?;
-        match pixels {
-            Pixels::Yuyv(data) => luma_from_yuyv(data, gray)?,
-            Pixels::Rgb(data) => luma_from_rgb(data, gray)?,
-        }
+        luma_from_yuyv(yuyv, gray)?;
         let detections = self.detector.detect(gray);
         Ok(detections.iter().map(|d| to_tag(d, &self.params)).collect())
     }
@@ -149,9 +139,16 @@ fn gray_image(slot: &mut Option<Image>, w: usize, h: usize) -> Result<&mut Image
 }
 
 /// Copies the luma of a packed YUYV frame into `gray`: every other byte.
+/// Packed YUYV is exactly 2 bytes a pixel, so a frame of any other length is
+/// in some other layout (NV12, MJPEG) and is refused rather than misread.
 fn luma_from_yuyv(data: &[u8], gray: &mut Image) -> Result<()> {
     let (w, h, stride) = (gray.width(), gray.height(), gray.stride());
-    ensure!(data.len() >= 2 * w * h, "YUYV frame too short for {w}x{h}");
+    ensure!(
+        data.len() == 2 * w * h,
+        "frame is {} bytes, but packed YUYV at {w}x{h} is {}",
+        data.len(),
+        2 * w * h
+    );
     let buf = gray.as_slice_mut();
     for (y, row) in data.chunks_exact(2 * w).take(h).enumerate() {
         for (out, px) in buf[y * stride..][..w]
@@ -159,24 +156,6 @@ fn luma_from_yuyv(data: &[u8], gray: &mut Image) -> Result<()> {
             .zip(row.as_chunks::<2>().0)
         {
             *out = px[0];
-        }
-    }
-    Ok(())
-}
-
-/// Converts a packed 8-bit RGB frame to luma in `gray`.
-fn luma_from_rgb(data: &[u8], gray: &mut Image) -> Result<()> {
-    let (w, h, stride) = (gray.width(), gray.height(), gray.stride());
-    ensure!(data.len() >= 3 * w * h, "RGB frame too short for {w}x{h}");
-    let buf = gray.as_slice_mut();
-    for (y, row) in data.chunks_exact(3 * w).take(h).enumerate() {
-        for (out, px) in buf[y * stride..][..w]
-            .iter_mut()
-            .zip(row.as_chunks::<3>().0)
-        {
-            // BT.601 luma in 8.8 fixed point.
-            let luma = 77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2]);
-            *out = (luma >> 8) as u8;
         }
     }
     Ok(())
@@ -282,7 +261,11 @@ mod tests {
 
         let tags = TagDetector::new("tag36h11", 2, 2.0, size, k)
             .unwrap()
-            .detect(w as usize, h as usize, Pixels::Rgb(img.as_raw()))
+            .detect(
+                w as usize,
+                h as usize,
+                &synthetic_tag_rendering::to_yuyv(&img),
+            )
             .unwrap();
         assert_eq!(tags.len(), 1, "expected exactly one tag");
         let tag = &tags[0];
@@ -309,36 +292,6 @@ mod tests {
 
     /// The YUYV path must see exactly the luma the RGB path computes: for a
     /// grey image both are the grey level itself.
-    #[test]
-    fn yuyv_and_rgb_paths_agree() {
-        let (w, h, size) = (1280u32, 720u32, 0.04);
-        let k = Intrinsics::from_hfov(w, h, 60.0);
-        let truth = Pose {
-            r: synthetic_tag_rendering::rotation(-15.0, 30.0, -5.0),
-            t: [-0.05, 0.01, 0.4],
-            err: 0.0,
-        };
-        let img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
-        let yuyv: Vec<u8> = img
-            .as_raw()
-            .as_chunks::<6>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], 128, p[3], 128])
-            .collect();
-
-        let mut detector = TagDetector::new("tag36h11", 2, 2.0, size, k).unwrap();
-        let (w, h) = (w as usize, h as usize);
-        let from_rgb = detector.detect(w, h, Pixels::Rgb(img.as_raw())).unwrap();
-        let from_yuyv = detector.detect(w, h, Pixels::Yuyv(&yuyv)).unwrap();
-        assert_eq!(from_rgb.len(), 1);
-        assert_eq!(from_yuyv.len(), 1);
-        assert_eq!(
-            from_rgb[0].pose.map(|p| p.t),
-            from_yuyv[0].pose.map(|p| p.t)
-        );
-    }
-
     #[test]
     fn quaternion_of_a_quarter_turn_about_z() {
         let pose = Pose {

@@ -15,4 +15,3 @@ mod synthetic_tag_rendering;
 pub mod table;
 pub mod tag_detector;
 pub mod uvc;
-pub mod yuyv;

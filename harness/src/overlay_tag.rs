@@ -129,7 +129,7 @@ fn clip(a: [f64; 2], b: [f64; 2], w: f64, h: f64) -> Option<([f64; 2], [f64; 2])
 mod tests {
     use super::*;
     use crate::synthetic_tag_rendering;
-    use crate::tag_detector::{Pixels, Pose, TagDetector};
+    use crate::tag_detector::{Pose, TagDetector};
 
     /// Draws the overlay on a synthetic frame. Set OVERLAY_DUMP=<path.jpg> to
     /// write the result out for a visual check.
@@ -145,7 +145,11 @@ mod tests {
         let mut img = synthetic_tag_rendering::render(w, h, &k, &truth, size);
         let tags = TagDetector::new("tag36h11", 2, 2.0, size, k)
             .unwrap()
-            .detect(w as usize, h as usize, Pixels::Rgb(img.as_raw()))
+            .detect(
+                w as usize,
+                h as usize,
+                &synthetic_tag_rendering::to_yuyv(&img),
+            )
             .unwrap();
         for tag in &tags {
             draw_tag(&mut img, tag, &k, size);

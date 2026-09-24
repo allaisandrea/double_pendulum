@@ -11,13 +11,12 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use harness::camera::{self, capture_loop, is_packed_yuyv, pick_camera, Frame};
+use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::latest::{Latest, Take};
 use harness::mov::MovWriter;
-use harness::tag_detector::{Intrinsics, Pixels, Tag, TagDetector};
-use harness::{overlay_tag, uvc, yuyv};
+use harness::tag_detector::{Intrinsics, Tag, TagDetector};
+use harness::{overlay_tag, uvc};
 use image::RgbImage;
-use nokhwa::pixel_format::RgbFormat;
 use nokhwa::Buffer;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -310,12 +309,7 @@ fn detect_loop(
 
         let started = Instant::now();
         let (w, h) = (w as usize, h as usize);
-        let tags = if is_packed_yuyv(&frame.buf) {
-            detector.detect(w, h, Pixels::Yuyv(frame.buf.buffer()))?
-        } else {
-            let rgb = frame.buf.decode_image::<RgbFormat>()?;
-            detector.detect(w, h, Pixels::Rgb(rgb.as_raw()))?
-        };
+        let tags = detector.detect(w, h, frame.buf.buffer())?;
         let detect_ms = started.elapsed().as_secs_f64() * 1e3;
         write_csv(&mut csv, frame.seq, pts, detect_ms, &tags)?;
 
@@ -385,16 +379,11 @@ fn render_loop(args: &Args, rx: Receiver<Detected>, path: &Path) -> Result<u64> 
         for d in rx {
             let res = d.buf.resolution();
             let (w, h) = (res.width(), res.height());
-            let mut img = if is_packed_yuyv(&d.buf) {
-                let mut img = spare
-                    .take()
-                    .filter(|i| i.dimensions() == (w, h))
-                    .unwrap_or_else(|| RgbImage::new(w, h));
-                yuyv::to_rgb(d.buf.buffer(), &mut img);
-                img
-            } else {
-                d.buf.decode_image::<RgbFormat>()?
-            };
+            let mut img = spare
+                .take()
+                .filter(|i| i.dimensions() == (w, h))
+                .unwrap_or_else(|| RgbImage::new(w, h));
+            yuyv_to_rgb(d.buf.buffer(), &mut img);
             for tag in &d.tags {
                 overlay_tag::draw_tag(&mut img, tag, &d.k, args.tag_size);
             }
@@ -463,4 +452,44 @@ fn summarize(stats: &Stats, frames: u64, dropped: u64, out: &Path, csv: &Path) {
         eprintln!("    id {id}: {n} frames ({:.1}%)", pct(*n));
     }
     eprintln!("  detections: {}", csv.display());
+}
+
+/// Converts packed Y0 U Y1 V bytes into RGB, 3 bytes per pixel, for the
+/// video. The same BT.601 limited-range integer maths as nokhwa's decoder,
+/// but as a flat loop into a reused buffer, which is several times faster.
+fn yuyv_to_rgb(yuyv: &[u8], rgb: &mut [u8]) {
+    for (src, dst) in yuyv
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(rgb.as_chunks_mut::<6>().0)
+    {
+        let [y0, u, y1, v] = src.map(i32::from);
+        let (d, e) = (u - 128, v - 128);
+        let (r, g, b) = (409 * e + 128, -100 * d - 208 * e + 128, 516 * d + 128);
+        for (px, y) in dst.as_chunks_mut::<3>().0.iter_mut().zip([y0, y1]) {
+            let c = (y - 16) * 298;
+            *px = [(c + r) >> 8, (c + g) >> 8, (c + b) >> 8].map(|x| x.clamp(0, 255) as u8);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn matches_nokhwa_byte_for_byte() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let yuyv: Vec<u8> = (0..64 * 48 * 2)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        let want = nokhwa::utils::yuyv422_to_rgb(&yuyv, false).unwrap();
+        let mut got = vec![0; want.len()];
+        super::yuyv_to_rgb(&yuyv, &mut got);
+        assert_eq!(got, want);
+    }
 }
