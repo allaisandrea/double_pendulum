@@ -11,9 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const ARDUINO_VID: u16 = 0x2341;
 pub const READY: &str = "ready mdd10";
-const BAUD: u32 = 115_200;
 
 /// The Uno's port. Its name changes with the USB socket, so it is found by
 /// Arduino's vendor id.
@@ -88,3 +86,6 @@ pub fn watch(
         }
     }
 }
+
+const ARDUINO_VID: u16 = 0x2341;
+const BAUD: u32 = 115_200;

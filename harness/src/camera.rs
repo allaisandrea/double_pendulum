@@ -51,13 +51,6 @@ pub fn pick_camera(spec: &str) -> Result<Picked> {
     found.ok_or_else(|| anyhow!("no camera matches {spec:?}; available: {list}"))
 }
 
-fn open_camera(id: &str) -> Result<Camera> {
-    let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
-    let mut cam = Camera::new(CameraIndex::String(id.to_string()), format)?;
-    cam.open_stream()?;
-    Ok(cam)
-}
-
 /// A raw camera frame, untouched until the detector takes it, so frames
 /// dropped for being late cost nothing.
 pub struct Captured {
@@ -130,4 +123,11 @@ pub fn capture_loop(
     let _ = cam.stop_stream();
     slot.close();
     result
+}
+
+fn open_camera(id: &str) -> Result<Camera> {
+    let format = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+    let mut cam = Camera::new(CameraIndex::String(id.to_string()), format)?;
+    cam.open_stream()?;
+    Ok(cam)
 }

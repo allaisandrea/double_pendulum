@@ -14,11 +14,6 @@ pub struct Latest<T> {
     ready: Condvar,
 }
 
-struct State<T> {
-    value: Option<T>,
-    closed: bool,
-}
-
 /// The outcome of [`Latest::take`].
 pub enum Take<T> {
     Item(T),
@@ -72,6 +67,11 @@ impl<T> Latest<T> {
         self.state.lock().unwrap().closed = true;
         self.ready.notify_all();
     }
+}
+
+struct State<T> {
+    value: Option<T>,
+    closed: bool,
 }
 
 #[cfg(test)]

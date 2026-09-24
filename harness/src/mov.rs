@@ -12,13 +12,6 @@ use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Units of the movie and track headers' overall duration.
-const MOVIE_TIMESCALE: u32 = 1_000;
-/// Units of per-frame durations; 90 kHz is the conventional video clock.
-const MEDIA_TIMESCALE: u32 = 90_000;
-/// Seconds from the QuickTime epoch (1904) to the Unix epoch (1970).
-const QT_EPOCH_OFFSET: u64 = 2_082_844_800;
-
 pub struct MovWriter {
     file: BufWriter<File>,
     width: u16,
@@ -228,6 +221,15 @@ impl MovWriter {
         a.finish()
     }
 }
+
+/// Units of the movie and track headers' overall duration.
+const MOVIE_TIMESCALE: u32 = 1_000;
+
+/// Units of per-frame durations; 90 kHz is the conventional video clock.
+const MEDIA_TIMESCALE: u32 = 90_000;
+
+/// Seconds from the QuickTime epoch (1904) to the Unix epoch (1970).
+const QT_EPOCH_OFFSET: u64 = 2_082_844_800;
 
 /// Time-to-sample table, run-length encoded.
 fn stts(durations: &[u32]) -> Vec<u8> {

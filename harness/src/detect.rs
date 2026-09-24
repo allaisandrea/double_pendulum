@@ -3,10 +3,6 @@
 use anyhow::{anyhow, ensure, Result};
 use apriltag::{Detector, Family, Image, TagParams};
 
-/// Orthogonal-iteration steps per pose; what apriltag's own
-/// `estimate_tag_pose` uses.
-const POSE_ITERATIONS: usize = 50;
-
 /// Pinhole camera intrinsics, in pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct Intrinsics {
@@ -231,6 +227,10 @@ impl Tracker {
         Ok(tags)
     }
 }
+
+/// Orthogonal-iteration steps per pose; what apriltag's own
+/// `estimate_tag_pose` uses.
+const POSE_ITERATIONS: usize = 50;
 
 #[cfg(test)]
 mod tests {

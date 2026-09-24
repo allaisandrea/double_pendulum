@@ -20,13 +20,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Mode 1 is manual exposure; 8 is the aperture-priority auto mode these
-/// cameras come up in.
-const MODE_MANUAL: &str = "1";
-
-/// `exposure-time-abs` counts in units of 100 us, per the UVC spec.
-const EXPOSURE_UNIT_US: u32 = 100;
-
 /// What was asked for, and what the camera actually accepted.
 pub struct Applied {
     pub exposure_us: u32,
@@ -158,6 +151,13 @@ impl Device {
         None
     }
 }
+
+/// Mode 1 is manual exposure; 8 is the aperture-priority auto mode these
+/// cameras come up in.
+const MODE_MANUAL: &str = "1";
+
+/// `exposure-time-abs` counts in units of 100 us, per the UVC spec.
+const EXPOSURE_UNIT_US: u32 = 100;
 
 /// Looks for `uvc-util`: an explicit override first, then the copy this
 /// repository builds, then whatever is on PATH.

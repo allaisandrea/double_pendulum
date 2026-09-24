@@ -21,9 +21,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Position then orientation: x y z qw qx qy qz.
-const POSE_LEN: i32 = 7;
-
 /// One tag as seen in one frame.
 #[derive(Clone, Debug)]
 pub struct TagRow {
@@ -56,6 +53,78 @@ pub struct FrameRow {
     /// The action in effect after this frame.
     pub action: i8,
 }
+
+/// Buffers frame rows and writes them to an IPC stream in batches.
+pub struct Table {
+    schema: SchemaRef,
+    writer: StreamWriter<BufWriter<File>>,
+    rows: Vec<FrameRow>,
+    written: u64,
+}
+
+impl Table {
+    /// Creates the frames table at `path`, with one column group per tag id
+    /// and `metadata` in its schema.
+    pub fn create(path: &Path, tag_ids: &[usize], metadata: HashMap<String, String>) -> Result<Self> {
+        let schema = frames_schema(tag_ids, metadata);
+        let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
+        let writer = StreamWriter::try_new(BufWriter::new(file), &schema)?;
+        Ok(Self {
+            schema,
+            writer,
+            rows: Vec::new(),
+            written: 0,
+        })
+    }
+
+    pub fn push(&mut self, row: FrameRow) {
+        self.rows.push(row);
+    }
+
+    /// Writes the buffered rows as one batch and flushes it to disk.
+    pub fn flush(&mut self) -> Result<()> {
+        if self.rows.is_empty() {
+            return Ok(());
+        }
+        let batch = frames_batch(&self.schema, &self.rows)?;
+        self.writer.write(&batch)?;
+        self.writer.flush()?;
+        self.written += self.rows.len() as u64;
+        self.rows.clear();
+        Ok(())
+    }
+
+    /// Flushes and writes the end-of-stream marker. Returns rows written.
+    pub fn finish(mut self) -> Result<u64> {
+        self.flush()?;
+        self.writer.finish()?;
+        Ok(self.written)
+    }
+}
+
+/// Signed nanoseconds from `t0` to `t`, both on the monotonic clock.
+pub fn rel_ns(t: Duration, t0: Duration) -> i64 {
+    t.as_nanos() as i64 - t0.as_nanos() as i64
+}
+
+/// The detector's pose as the 7 recorded floats: position, then a unit
+/// quaternion with w >= 0. q and -q are the same rotation; picking one
+/// stops the stored values flipping sign between frames for no reason.
+pub fn pose_row(t: [f64; 3], q: [f64; 4]) -> [f32; 7] {
+    let s = if q[0] < 0.0 { -1.0 } else { 1.0 };
+    [
+        t[0] as f32,
+        t[1] as f32,
+        t[2] as f32,
+        (s * q[0]) as f32,
+        (s * q[1]) as f32,
+        (s * q[2]) as f32,
+        (s * q[3]) as f32,
+    ]
+}
+
+/// Position then orientation: x y z qw qx qy qz.
+const POSE_LEN: i32 = 7;
 
 /// Columns before and after the per-tag groups.
 const HEAD: [&str; 5] = ["frame", "t_capture", "t_arrival", "t_detect_start", "t_detected"];
@@ -146,75 +215,6 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
     columns.extend(policy_times.iter_mut().map(|b| Arc::new(b.finish()) as ArrayRef));
     columns.push(Arc::new(action.finish()));
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
-}
-
-/// Buffers frame rows and writes them to an IPC stream in batches.
-pub struct Table {
-    schema: SchemaRef,
-    writer: StreamWriter<BufWriter<File>>,
-    rows: Vec<FrameRow>,
-    written: u64,
-}
-
-impl Table {
-    /// Creates the frames table at `path`, with one column group per tag id
-    /// and `metadata` in its schema.
-    pub fn create(path: &Path, tag_ids: &[usize], metadata: HashMap<String, String>) -> Result<Self> {
-        let schema = frames_schema(tag_ids, metadata);
-        let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
-        let writer = StreamWriter::try_new(BufWriter::new(file), &schema)?;
-        Ok(Self {
-            schema,
-            writer,
-            rows: Vec::new(),
-            written: 0,
-        })
-    }
-
-    pub fn push(&mut self, row: FrameRow) {
-        self.rows.push(row);
-    }
-
-    /// Writes the buffered rows as one batch and flushes it to disk.
-    pub fn flush(&mut self) -> Result<()> {
-        if self.rows.is_empty() {
-            return Ok(());
-        }
-        let batch = frames_batch(&self.schema, &self.rows)?;
-        self.writer.write(&batch)?;
-        self.writer.flush()?;
-        self.written += self.rows.len() as u64;
-        self.rows.clear();
-        Ok(())
-    }
-
-    /// Flushes and writes the end-of-stream marker. Returns rows written.
-    pub fn finish(mut self) -> Result<u64> {
-        self.flush()?;
-        self.writer.finish()?;
-        Ok(self.written)
-    }
-}
-
-/// Signed nanoseconds from `t0` to `t`, both on the monotonic clock.
-pub fn rel_ns(t: Duration, t0: Duration) -> i64 {
-    t.as_nanos() as i64 - t0.as_nanos() as i64
-}
-
-/// The detector's pose as the 7 recorded floats: position, then a unit
-/// quaternion with w >= 0. q and -q are the same rotation; picking one
-/// stops the stored values flipping sign between frames for no reason.
-pub fn pose_row(t: [f64; 3], q: [f64; 4]) -> [f32; 7] {
-    let s = if q[0] < 0.0 { -1.0 } else { 1.0 };
-    [
-        t[0] as f32,
-        t[1] as f32,
-        t[2] as f32,
-        (s * q[0]) as f32,
-        (s * q[1]) as f32,
-        (s * q[2]) as f32,
-        (s * q[3]) as f32,
-    ]
 }
 
 #[cfg(test)]
