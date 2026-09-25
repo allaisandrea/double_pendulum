@@ -78,9 +78,12 @@ world model steps.
 - **Each imagined frame** is the world model's prediction. Each tag is
   dropped as unseen with the probability the model gives, so the policy
   meets misses as it will on the rig.
-- **The reward** is the sum of the cosines of the tags' camera-frame yaws.
-  The camera is upside down, so a hanging arm scores −1 and an upright one
-  +1.
+- **The reward** is the sum of the cosines of the tags' yaws, each turned
+  so that its hanging yaw reads 180°: a hanging arm scores −1 and an
+  upright one +1. The hanging yaws (`hanging_yaws`) are measured over the
+  ends of the recorded rests, since a tag mounted slightly turned reads a
+  few degrees off 180° there; they are saved in the policy checkpoint. The
+  world model still works in raw camera yaws.
 
 ```sh
 uv run python -m imagination.train imagination/configs/base.toml --name first
@@ -88,16 +91,20 @@ uv run python -m imagination.train imagination/configs/base.toml --name smoke --
 ```
 
 `world_model` in the config names the checkpoint to use. Every
-`eval_every` iterations the policy acts greedily from a fixed set of real
-starts for `eval_steps` frames: `eval/reward` is the mean reward per frame,
-`eval/upright` the share of frames with every tag within 30° of upright,
-each also over the second half of the rollout. The checkpoint goes to
-`runs/<name>/policy.pt`.
+`eval_every` iterations the checkpoint goes to `runs/<name>/policy.pt` and
+the policy is evaluated: one rollout of `eval_steps` frames (10 s) from
+the pendulum hanging still, at each tag's mean yaw at the end of the
+recorded rests. The policy acts greedily. Tag misses are drawn from the
+world model's probabilities with a generator seeded by `eval_seed`, so
+evaluating the same policy twice on the same device gives the same
+numbers.
 
-At the end of training, the policy acts greedily from the pendulum at rest
-(the end of the first long rest in the recordings) for `video_seconds`.
-The video goes to `runs/<name>/rollout.mp4` and to W&B as
-`rollout_from_rest`. To make one from any checkpoint:
+- `eval/reward`: the mean reward per frame, from −3 (all hanging) to +3.
+- `eval/upright`: the share of frames with every tag within 30° of upright.
+- `eval/mean_abs_action`: the mean |action|, in int8 units.
+
+At the end of training, the last evaluation's rollout becomes a video,
+`runs/<name>/rollout.mp4`, logged to W&B as `rollout_from_hanging`. To make one from any checkpoint:
 
 ```sh
 uv run python -m imagination.video runs/ppo-base/policy.pt

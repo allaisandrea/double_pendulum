@@ -37,9 +37,9 @@ max_grad_norm = 0.5
 seed = 0
 
 eval_every = 25
-eval_envs = 1024
-eval_steps = 250
-# Length of the video from rest made at the end.
-video_seconds = 10
+# Each evaluation is one greedy rollout of eval_steps frames (10 s) from the
+# pendulum hanging still, with its tag misses seeded by eval_seed.
+eval_steps = 1250
+eval_seed = 0
 
 wandb_project = "double-pendulum-imagination"

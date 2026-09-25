@@ -43,3 +43,11 @@ def test_a_video_has_one_frame_per_stride(tmp_path):
     path = tmp_path / "v.mp4"
     write_video(path, frames)
     assert iio.imread(path).shape[0] == 5
+
+
+def test_given_the_hanging_yaws_a_tilted_hang_is_drawn_straight_down():
+    tilt = np.radians(176.0)
+    obs = np.tile(np.array([[np.sin(tilt), np.cos(tilt)]] * 3, np.float32), (1, 1, 1))
+    frame = render(obs, np.ones((1, 3), bool), np.zeros(1), hanging=obs[0])[0]
+    for arm in range(3):
+        assert colour_below_pivot(frame, arm) == ARMS[arm]

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from common.data_lib import ACTION_SCALE, Windows, load_recording, rest_window, yaw
+from common.data_lib import ACTION_SCALE, Windows, correct_yaws, hanging_yaws, load_recording, yaw
 from common.testing_lib import pose, write_frames
 
 
@@ -38,19 +38,32 @@ def test_windows_do_not_span_recordings(tmp_path):
     assert (batch.action * ACTION_SCALE)[:, 0].tolist() == [0, 0, 0, 1]
 
 
-def test_the_rest_window_ends_a_long_rest_with_every_tag_seen(tmp_path):
+
+
+def test_hanging_yaws_average_the_ends_of_long_rests(tmp_path):
     path = tmp_path / "frames.arrows"
-    seen = [pose(np.pi)] * 3
-    poses = [seen] * 5 + [seen] * 7 + [[None] * 3] + [seen] * 3
-    actions = [10] * 5 + [0] * 7 + [0] + [20] * 3
+    # Rests (action 0) at yaws either side of 180°, and a driven stretch
+    # at another yaw that must not count.
+    rest = [[pose(np.pi - 0.1), pose(np.pi + 0.1), pose(np.pi)]] * 130
+    driven = [[pose(1.0)] * 3] * 20
+    poses = driven + rest + driven
+    actions = [30] * 20 + [0] * 130 + [30] * 20
     write_frames(path, list(range(len(actions))), poses, actions)
-    r = load_recording(path)
-    # The rest runs over frames 5-12, but frame 12 misses every tag, so
-    # the window ends at frame 11.
-    batch = rest_window([r], 4, min_rest=6)
-    assert batch.obs.shape == (1, 4, 3, 2)
-    assert np.array_equal(batch.obs[0].numpy(), r.obs[8:12])
-    assert batch.present.all()
-    assert (batch.action == 0).all()
+    h = hanging_yaws([load_recording(path)], min_rest=100).numpy()
+    angles = np.arctan2(h[:, 0], h[:, 1])
+    assert np.abs(angles) == pytest.approx([np.pi - 0.1, np.pi - 0.1, np.pi], abs=1e-5)
     with pytest.raises(ValueError):
-        rest_window([r], 4, min_rest=10)
+        hanging_yaws([load_recording(path)], min_rest=200)
+
+
+def test_corrected_yaws_hang_at_180_and_keep_their_differences():
+    offsets = np.array([-0.1, 0.05, 0.3])
+    hanging = np.stack([np.sin(np.pi + offsets), np.cos(np.pi + offsets)], -1)
+    yaw = np.array([[np.pi, 0.0, 1.0]]) + offsets
+    obs = np.stack([np.sin(yaw), np.cos(yaw)], -1)
+    fixed = correct_yaws(obs, hanging)
+    angles = np.arctan2(fixed[..., 0], fixed[..., 1])
+    assert np.abs(angles[0, 0]) == pytest.approx(np.pi)
+    assert angles[0, 1:] == pytest.approx([0.0, 1.0])
+    fixed_t = correct_yaws(torch.from_numpy(obs), torch.from_numpy(hanging))
+    assert fixed_t.numpy() == pytest.approx(fixed)

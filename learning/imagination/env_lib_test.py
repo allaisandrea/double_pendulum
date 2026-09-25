@@ -1,9 +1,12 @@
+import numpy as np
 import pytest
 import torch
 from torch.nn import functional as F
 
 from common.data_lib import ACTION_SCALE, Recording, Windows
 from imagination.env_lib import ImaginedEnv, action_levels, reward
+
+STRAIGHT = torch.tensor([[0.0, -1.0]] * 3)
 from world_model.model_lib import STEP_FEATURES, WorldModel
 
 
@@ -36,10 +39,10 @@ class Recorder(WorldModel):
         return self.frame.expand(b, -1, -1), torch.full((b, 3), self.logit), None, None
 
 
-def make_env(window=3, policy_window=2, logit=-20.0, sample_missing=True):
+def make_env(window=3, policy_window=2, logit=-20.0, sample_missing=True, hanging=STRAIGHT):
     frame = F.normalize(torch.tensor([[1.0, 1.0], [0.0, 1.0], [1.0, 0.0]]), dim=-1)
     model = Recorder(window, frame, logit)
-    env = ImaginedEnv(model, action_levels(16, 9), policy_window, sample_missing)
+    env = ImaginedEnv(model, action_levels(16, 9), policy_window, sample_missing, hanging)
     steps = 10
     rec = Recording(
         "r",
@@ -81,3 +84,22 @@ def test_a_likely_miss_drops_the_tag_but_not_the_reward():
     env, _, _ = make_env(logit=20.0, sample_missing=False)
     env.step(torch.tensor([4, 4]))
     assert env.present[:, -1].all()
+
+
+def test_the_reward_counts_each_arm_from_its_own_hanging_yaw():
+    # Tag 0 hangs at 170°: a prediction at 350° is its upright, and scores 1.
+    tilt = torch.tensor(np.radians(170.0), dtype=torch.float32)
+    hanging = STRAIGHT.clone()
+    hanging[0] = torch.stack([torch.sin(tilt), torch.cos(tilt)])
+    env, model, _ = make_env(hanging=hanging)
+    up = torch.tensor(np.radians(350.0), dtype=torch.float32)
+    model.frame = torch.stack([torch.stack([torch.sin(up), torch.cos(up)]), torch.tensor([0.0, 1.0]), torch.tensor([0.0, 1.0])])
+    assert env.step(torch.tensor([4, 4])).tolist() == pytest.approx([3.0, 3.0], abs=1e-5)
+
+
+def test_a_hanging_start_is_still_and_seen():
+    env, _, _ = make_env()
+    env.reset_hanging(4)
+    assert env.obs.shape == (4, env.history, 3, 2)
+    assert torch.equal(env.obs, STRAIGHT.expand_as(env.obs))
+    assert env.present.all() and (env.action == 0).all()

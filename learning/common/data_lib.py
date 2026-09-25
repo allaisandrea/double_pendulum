@@ -125,23 +125,37 @@ class Windows:
         return Batch(self.obs[rows], self.present[rows], self.action[rows])
 
 
-def rest_window(recordings: list[Recording], length: int, min_rest: int = 500, device="cpu") -> Batch:
-    """The `length` steps ending at the last frame with every tag seen in
-    the first rest in `recordings` of at least `min_rest` frames at action
-    0 (4 s at 125 fps): the pendulum hanging still, as a batch of one."""
+
+
+def hanging_yaws(recordings: list[Recording], min_rest: int = 500) -> torch.Tensor:
+    """The sin and cos [NUM_TAGS, 2] of each tag's yaw with the pendulum
+    hanging still: the mean over the last second of every rest of at least
+    `min_rest` frames at action 0 (4 s at 125 fps), when the pendulum has
+    nearly settled. Averaging the sines and cosines keeps angles either
+    side of 180° from cancelling.
+
+    A tag hangs at 180° only if it is mounted square on its arm and the
+    camera has no roll; these are what it reads instead.
+    """
+    sums = np.zeros((NUM_TAGS, 2))
     for r in recordings:
         edges = np.flatnonzero(np.diff(np.r_[0, (r.action == 0).astype(int), 0]))
-        all_seen = r.present.all(axis=1)
         for start, end in zip(edges[::2], edges[1::2]):
-            seen = np.flatnonzero(all_seen[start:end])
-            if len(seen) == 0:
-                continue
-            end = start + seen[-1] + 1
-            if end - start >= max(min_rest, length):
-                s = slice(end - length, end)
-                return Batch(
-                    torch.from_numpy(r.obs[s][None]).to(device),
-                    torch.from_numpy(r.present[s][None]).to(device),
-                    torch.from_numpy(r.action[s][None]).to(device),
-                )
-    raise ValueError(f"no rest of {min_rest} frames in the recordings")
+            if end - start >= min_rest:
+                last = slice(end - 125, end)
+                sums += (r.obs[last] * r.present[last][..., None]).sum(0)
+    norm = np.linalg.norm(sums, axis=-1, keepdims=True)
+    if (norm == 0).any():
+        raise ValueError(f"no rest of {min_rest} frames with every tag seen")
+    return torch.from_numpy((sums / norm).astype(np.float32))
+
+
+def correct_yaws(obs, hanging):
+    """obs [..., NUM_TAGS, 2] with each tag's yaw turned so that its
+    hanging yaw [NUM_TAGS, 2] reads 180° and upright 0°: the pendulum's
+    own angles, whatever the tags' mounting. Numpy or torch."""
+    s, c = obs[..., 0], obs[..., 1]
+    # Turning by 180° - hanging: sin and cos of that are sin h and -cos h.
+    hs, hc = hanging[..., 0], -hanging[..., 1]
+    stack = np.stack if isinstance(obs, np.ndarray) else torch.stack
+    return stack([s * hc + c * hs, c * hc - s * hs], -1)

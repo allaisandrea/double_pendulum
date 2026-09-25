@@ -10,13 +10,16 @@ predicts the next frame from its own window, with that action in place.
 A tag is dropped from the next frame with the probability the model
 predicts, when `sample_missing` is set, so the policy learns to cope with
 misses as it must on the rig. The reward comes from the prediction itself,
-seen or not: the sum of the cosines of the yaws. The camera is upside
-down, so a hanging arm reads about 180° and scores -1, an upright one +1.
+seen or not: the sum of the cosines of the yaws, corrected so that each
+tag's hanging yaw reads 180°. A hanging arm scores -1, an upright one +1.
+
+The world model works in the camera's raw yaws; only the reward, and what
+is drawn or measured as upright, use the corrected ones.
 """
 import torch
 from torch.nn import functional as F
 
-from common.data_lib import ACTION_SCALE, Batch, Windows
+from common.data_lib import ACTION_SCALE, NUM_TAGS, Batch, Windows, correct_yaws
 from world_model.model_lib import STEP_FEATURES, WorldModel, step_features
 
 INT8_MIN, INT8_MAX = -128, 127
@@ -39,13 +42,20 @@ class ImaginedEnv:
         levels: torch.Tensor,
         policy_window: int,
         sample_missing: bool,
+        hanging: torch.Tensor,
     ):
+        """`hanging` [NUM_TAGS, 2] is the sin and cos of each tag's yaw with
+        the pendulum hanging still, from `hanging_yaws`."""
         self.model = model
+        self.hanging = hanging.to(model.delta_scale.device)
         self.policy_window = policy_window
         self.history = max(model.window, policy_window + 1)
         self.levels = levels.to(model.delta_scale.device)
         self.actions = self.levels / ACTION_SCALE
         self.sample_missing = sample_missing
+        # Draws the misses when set, for repeatable runs; otherwise torch's
+        # global generator does.
+        self.generator: torch.Generator | None = None
 
     @property
     def features(self) -> int:
@@ -56,6 +66,18 @@ class ImaginedEnv:
         """Starts one environment from each window at `index`, of `history` steps."""
         assert starts.length == self.history
         self.reset_to(starts.gather(index))
+
+    def reset_hanging(self, envs: int):
+        """Starts `envs` environments from the pendulum hanging still: every
+        frame of the history at the hanging yaws, every tag seen, action 0."""
+        h, device = self.history, self.hanging.device
+        self.reset_to(
+            Batch(
+                self.hanging.expand(envs, h, NUM_TAGS, 2).clone(),
+                torch.ones(envs, h, NUM_TAGS, dtype=torch.bool, device=device),
+                torch.zeros(envs, h, device=device),
+            )
+        )
 
     def reset_to(self, batch: Batch):
         """Starts one environment from each window of `history` steps in `batch`."""
@@ -84,16 +106,29 @@ class ImaginedEnv:
         # The predicted frame, including tags then dropped as unseen.
         self.prediction = nxt
         if self.sample_missing:
-            seen = torch.rand_like(logit) >= torch.sigmoid(logit)
+            if self.generator is None:
+                u = torch.rand_like(logit)
+            else:
+                u = torch.rand(logit.shape, generator=self.generator).to(logit.device)
+            seen = u >= torch.sigmoid(logit)
         else:
             seen = torch.ones_like(logit, dtype=torch.bool)
         self.obs = torch.cat([self.obs[:, 1:], (nxt * seen[..., None])[:, None]], dim=1)
         self.present = torch.cat([self.present[:, 1:], seen[:, None]], dim=1)
         # The new frame's action is the policy's next choice.
         self.action = torch.cat([self.action[:, 1:], torch.zeros_like(self.action[:, :1])], dim=1)
-        return reward(nxt)
+        return reward(correct_yaws(nxt, self.hanging))
 
 
 def reward(obs: torch.Tensor) -> torch.Tensor:
-    """The sum over tags of cos(yaw), for obs [..., NUM_TAGS, 2]."""
+    """The sum over tags of cos(yaw), for corrected obs [..., NUM_TAGS, 2]."""
     return obs[..., 1].sum(-1)
+
+
+# A tag counts as upright within 30° of vertical.
+UPRIGHT_COS = 0.8660254
+
+
+def upright(obs: torch.Tensor) -> torch.Tensor:
+    """Whether every tag is upright, for corrected obs [..., NUM_TAGS, 2]."""
+    return (obs[..., 1] > UPRIGHT_COS).all(-1)
