@@ -1,8 +1,8 @@
 # Recordings are directories under data_dir holding frames.arrows.
 data_dir = "data"
-# Random-walk recordings, and the first collection with a trained policy
-# (ppo-speed, 30 min of 10 s spin-ups from hanging).
-train = ["1790282998", "1790279628", "1790372784"]
+# As base.toml, without the trained policy's collection: the random-walk
+# recordings alone, to compare against on the same validation sets.
+train = ["1790282998", "1790279628"]
 
 # Steps of history the model sees. The action reaches the motor about
 # 27 ms (3-4 frames) after capture, so this needs to reach well past that.

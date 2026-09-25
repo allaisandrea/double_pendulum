@@ -40,7 +40,11 @@ uv run pytest                                                      # every *_tes
 ```
 
 The config names the training and validation recordings by directory
-name. The run's evaluation sample and latest checkpoint go to
+name. `val` can be a table of named validation sets, each reported under
+its name: `base.toml` validates on a random-walk recording
+(`val_random_walk`) and on one collected with a trained policy
+(`val_policy`). `random_walk_only.toml` is `base.toml` without the trained
+policy's training recording, for comparison. The run's evaluation sample and latest checkpoint go to
 `runs/world_model/<name>/`, which must not exist yet.
 
 ### Metrics

@@ -4,8 +4,10 @@
     uv run python -m world_model.train world_model/configs/base.toml --name smoke --wandb disabled --steps 200
 
 Every `eval_every` steps, training pauses to evaluate on a fixed sample of
-windows from the training and the validation recordings: the same sample
-each time, drawn from `seed`. The run's config, its evaluation sample and
+windows from the training recordings and from each validation set: the
+same sample each time, drawn from `seed`. `val` in the config names the
+validation sets, each a list of recordings whose metrics are logged under
+the set's name; a plain list is one set, `val`. The run's config, its evaluation sample and
 the latest checkpoint go to `runs/world_model/<name>/`, which must not exist yet; the
 name is also the run's name in Weights & Biases.
 """
@@ -50,20 +52,24 @@ def main():
         cfg = tomllib.load(f)
     if args.steps is not None:
         cfg["steps"] = args.steps
-    if set(cfg["train"]) & set(cfg["val"]):
-        raise SystemExit("a recording is in both train and val")
+    val_sets = cfg["val"] if isinstance(cfg["val"], dict) else {"val": cfg["val"]}
+    for name, names in val_sets.items():
+        if set(cfg["train"]) & set(names):
+            raise SystemExit(f"a recording is in both train and {name}")
     device = pick_device(args.device)
     torch.manual_seed(cfg["seed"])
     generator = torch.Generator().manual_seed(cfg["seed"])
 
     data_dir = Path(cfg["data_dir"])
     train_recs = load_recordings(data_dir, cfg["train"])
-    val_recs = load_recordings(data_dir, cfg["val"])
     w, horizon = cfg["window"], max(cfg["horizons"])
     train = Windows(train_recs, w + 1, device)
     eval_sets = {
         "train": Windows(train_recs, w + horizon, device),
-        "val": Windows(val_recs, w + horizon, device),
+        **{
+            name: Windows(load_recordings(data_dir, names), w + horizon, device)
+            for name, names in val_sets.items()
+        },
     }
     eval_index = {
         k: v.sample(min(cfg["eval_samples"], len(v)), generator) for k, v in eval_sets.items()
@@ -98,13 +104,12 @@ def main():
                 metrics[f"{split}/{k}"] = v
         wandb.log(metrics, step=step)
         h = f"h{horizon:03d}"
-        print(
-            f"step {step}: val mse {metrics['val/mse']:.4f}"
-            f" 1-R² h001 {metrics['val/one_minus_r2/h001']:.4f}"
-            f" {h} {metrics[f'val/one_minus_r2/{h}']:.4f}"
-            f" (copy-last {metrics[f'val/copy_last/{h}']:.4f})",
-            flush=True,
-        )
+        scores = [
+            f"{name} 1-R² h001 {metrics[f'{name}/one_minus_r2/h001']:.4f}"
+            f" {h} {metrics[f'{name}/one_minus_r2/{h}']:.4f}"
+            for name in val_sets
+        ]
+        print(f"step {step}: " + ", ".join(scores), flush=True)
         torch.save({"config": cfg, "delta_scale": scale, "model": model.state_dict()}, out / "model.pt")
 
     log_eval(0)
