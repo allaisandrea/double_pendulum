@@ -8,6 +8,9 @@ through a USB camera and drives the motor. Two programs:
 - **`collect`** drives the motor while recording tag poses and the actions
   sent, on one clock, as training data for RL. See [collect](#collect-rl-training-data).
 
+And `check_policy` checks and times a policy trained in `learning`; see
+[Trained policies](#trained-policies).
+
 ```sh
 cargo build
 ./target/debug/record                        # Ctrl-C to stop
@@ -247,6 +250,34 @@ they are recorded with their true times.
 
 If the Uno speaks after its ready line, it has reset, so `collect` stops and
 reports the recording as unreliable.
+
+## Trained policies
+
+`src/mlp_policy.rs` runs a policy trained in `learning` (see its README,
+"Training in imagination"): the actor's forward pass, and the input built
+from the frames as in training. `learning`'s `imagination.export` writes a
+policy checkpoint as JSON, with test cases whose logits PyTorch computed
+through the training data pipeline; loading the policy here recomputes
+them all and refuses it if any differs.
+
+```sh
+cd ../learning && uv run python -m imagination.export runs/policy/<name>/policy.pt
+cd ../harness && cargo run --release --bin check_policy -- ../learning/runs/policy/<name>/policy.json
+```
+
+`check_policy` loads the export, which runs the checks, and times the
+input and forward pass: about 30 µs on the M4 for a 16-frame window and
+two hidden layers of 256.
+
+The input covers the latest `policy_window` frames by camera frame number:
+a frame the camera dropped counts as one with no tag seen, the action
+carried through it, as in the recordings `learning` trains on. It needs
+`policy_window + 1` frames of history, more than `collect` keeps
+(`HISTORY_LENGTH`), so the policy is not yet wired into `collect`.
+
+`src/testdata/mlp_policy.json` is a small random policy for the tests,
+from `uv run python -m imagination.export --fixture
+../harness/src/testdata/mlp_policy.json` in `learning`.
 
 ## Measuring detection recall
 

@@ -141,6 +141,19 @@ yaw, turned right side up, with an arm faded in frames where its tag was
 dropped as unseen, and the action below. Every frame is shown, played 4
 times slower than real time (`--slowdown`).
 
+To run a policy in the harness, export it as JSON:
+
+```sh
+uv run python -m imagination.export runs/policy/ppo-base/policy.pt
+```
+
+The export (`policy.json` next to the checkpoint) holds the actor's layers,
+the actions and the window, and test cases: histories of frames as the
+harness sees them, with the logits the policy gives for each, computed by
+writing each history as a frames table and reading it back as training
+data. The harness recomputes them when it loads the policy; see its
+README, "Trained policies".
+
 ### Metrics
 
 Rewards are per frame: the sum of the three arms' corrected cosines, from
