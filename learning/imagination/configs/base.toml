@@ -1,5 +1,5 @@
 # The world model checkpoint, and the recordings whose windows start episodes.
-world_model = "runs/trapezoid/model.pt"
+world_model = "runs/world_model/trapezoid/model.pt"
 data_dir = "data"
 recordings = ["1790282998", "1790279628", "1790281442"]
 

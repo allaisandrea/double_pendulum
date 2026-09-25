@@ -1,7 +1,7 @@
 """Writes a video of a policy acting in the world model, from the pendulum hanging still.
 
-    uv run python -m imagination.video runs/ppo-base/policy.pt
-    uv run python -m imagination.video runs/ppo-base/policy.pt --seconds 20 --sample --out spin.mp4
+    uv run python -m imagination.video runs/policy/ppo-base/policy.pt
+    uv run python -m imagination.video runs/policy/ppo-base/policy.pt --seconds 20 --sample --out spin.mp4
 
 The start is the pendulum hanging still, at the yaws it rests at in the
 recordings, and the arms are drawn corrected to hang straight down. The

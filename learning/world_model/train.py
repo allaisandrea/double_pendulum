@@ -6,7 +6,7 @@
 Every `eval_every` steps, training pauses to evaluate on a fixed sample of
 windows from the training and the validation recordings: the same sample
 each time, drawn from `seed`. The run's config, its evaluation sample and
-the latest checkpoint go to `runs/<name>/`, which must not exist yet; the
+the latest checkpoint go to `runs/world_model/<name>/`, which must not exist yet; the
 name is also the run's name in Weights & Biases.
 """
 import argparse
@@ -42,7 +42,7 @@ def main():
     parser.add_argument("--device", default="auto")
     parser.add_argument("--steps", type=int, help="override the config's steps")
     args = parser.parse_args()
-    out = Path("runs") / args.name
+    out = Path("runs/world_model") / args.name
     if out.exists():
         raise SystemExit(f"{out} exists: pick another --name")
 

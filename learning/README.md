@@ -41,7 +41,7 @@ uv run pytest                                                      # every *_tes
 
 The config names the training and validation recordings by directory
 name. The run's evaluation sample and latest checkpoint go to
-`runs/<name>/`, which must not exist yet.
+`runs/world_model/<name>/`, which must not exist yet.
 
 ### Metrics
 
@@ -91,7 +91,7 @@ uv run python -m imagination.train imagination/configs/base.toml --name smoke --
 ```
 
 `world_model` in the config names the checkpoint to use. Every
-`eval_every` iterations the checkpoint goes to `runs/<name>/policy.pt` and
+`eval_every` iterations the checkpoint goes to `runs/policy/<name>/policy.pt` and
 the policy is evaluated: one rollout of `eval_steps` frames (10 s) from
 the pendulum hanging still, at each tag's mean yaw at the end of the
 recorded rests. The policy acts greedily. Tag misses are drawn from the
@@ -104,11 +104,12 @@ numbers.
 - `eval/mean_abs_action`: the mean |action|, in int8 units.
 
 At the end of training, the last evaluation's rollout becomes a video,
-`runs/<name>/rollout.mp4`, logged to W&B as `rollout_from_hanging`. To make one from any checkpoint:
+`runs/policy/<name>/rollout.mp4`, logged to W&B as `rollout_from_hanging`.
+To make one from any checkpoint:
 
 ```sh
-uv run python -m imagination.video runs/ppo-base/policy.pt
-uv run python -m imagination.video runs/ppo-base/policy.pt --seconds 20 --sample --world-model runs/base/model.pt --out spin.mp4
+uv run python -m imagination.video runs/policy/ppo-base/policy.pt
+uv run python -m imagination.video runs/policy/ppo-base/policy.pt --seconds 20 --sample --world-model runs/world_model/base/model.pt --out spin.mp4
 ```
 
 The video draws three equal arms chained from the pivot, each at its tag's

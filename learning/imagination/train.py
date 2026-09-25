@@ -9,11 +9,11 @@ the policy, and updates the policy on that batch. Rewards are scaled by
 1 - gamma for the critic, which puts returns in about [-3, 3].
 
 Every `eval_every` iterations, the run's checkpoint is saved to
-`runs/<name>/policy.pt`, and the policy is evaluated: one rollout of
+`runs/policy/<name>/policy.pt`, and the policy is evaluated: one rollout of
 `eval_steps` frames from the pendulum hanging still, acting greedily. Its
 tag misses are drawn from a generator seeded with `eval_seed`, so
 evaluations are repeatable. At the end, a video of the last evaluation's
-rollout goes to `runs/<name>/rollout.mp4` and to W&B.
+rollout goes to `runs/policy/<name>/rollout.mp4` and to W&B.
 """
 import argparse
 import time
@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--device", default="auto")
     parser.add_argument("--iterations", type=int, help="override the config's iterations")
     args = parser.parse_args()
-    out = Path("runs") / args.name
+    out = Path("runs/policy") / args.name
     if out.exists():
         raise SystemExit(f"{out} exists: pick another --name")
 
