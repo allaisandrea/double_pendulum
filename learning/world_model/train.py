@@ -18,6 +18,7 @@ import torch
 import wandb
 
 from common.data_lib import Windows, load_recordings
+from common.schedule_lib import trapezoid_scheduler
 from world_model.evaluation_lib import evaluate
 from world_model.model_lib import WorldModel, last_seen, losses
 
@@ -91,7 +92,7 @@ def main():
     scale = change_scale(train, 65536, generator)
     model = WorldModel(w, cfg["hidden"], cfg["layers"], scale).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, cfg["steps"])
+    sched = trapezoid_scheduler(opt, cfg["steps"], cfg["warmup_steps"], cfg["cooldown_fraction"])
 
     run = wandb.init(
         project=cfg["wandb_project"],

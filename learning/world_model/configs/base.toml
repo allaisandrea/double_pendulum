@@ -10,7 +10,11 @@ hidden = 256
 layers = 3
 
 batch_size = 1024
+# The learning rate warms up linearly over warmup_steps, holds at lr, and
+# cools down to zero as 1 - sqrt over the last cooldown_fraction of steps.
 lr = 1e-3
+warmup_steps = 300
+cooldown_fraction = 0.2
 weight_decay = 1e-4
 steps = 20000
 bce_weight = 0.1
