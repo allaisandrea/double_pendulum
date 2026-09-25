@@ -5,6 +5,7 @@
 
 pub mod camera;
 pub mod clock;
+pub mod governor;
 pub mod constants;
 pub mod latest;
 pub mod mlp_policy;

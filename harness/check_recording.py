@@ -64,6 +64,9 @@ def main():
     times = {c: ns(frames[c]) for c in TIMES + POLICY_TIMES}
     acted = frames["acted"].to_pylist()
     actions = frames["action"].to_pylist()
+    # Recordings from before the speed governor have no governed column.
+    governed = (frames["governed"].to_pylist() if "governed" in frames.column_names
+                else [False] * len(actions))
 
     if any(b <= a for a, b in zip(seq, seq[1:])):
         problems.append("frame numbers do not strictly increase")
@@ -91,10 +94,12 @@ def main():
             if a != last:
                 problems.append(f"frame {f}: skipped, carries {a}, but {last} was in effect")
             continue
+        if governed[i] and a != 0:
+            problems.append(f"frame {f}: governed, but sent {a} rather than 0")
         if resting(times["t_capture"][i], active, rest):
             if a != 0:
                 problems.append(f"frame {f}: action {a} decided in a rest period")
-        elif step is not None and abs(a - last) > step:
+        elif step is not None and abs(a - last) > step and not governed[i] and not (i and governed[i - 1]):
             problems.append(f"frame {f}: action moved {last} -> {a}, more than the step {step}")
         last = a
         delay.append((times["t_sent"][i] - times["t_capture"][i]) / 1e6)
@@ -108,6 +113,8 @@ def main():
     print(f"{run}: {n} frames, policy acted on {n_acted}; the first {warmup} filled its history, "
           f"{busy} ({100 * busy / max(n - min(first, warmup), 1):.1f}%) were skipped while it was busy")
     print(f"  camera frames that never reached detection: {never_detected}")
+    print(f"  governed: {sum(governed)} actions sent as 0, the arm too fast "
+          f"({meta.get('governor', 'no governor')})")
     print(f"  capture to send: {quantiles(delay)}")
     if problems:
         print(f"\n{len(problems)} problems:")

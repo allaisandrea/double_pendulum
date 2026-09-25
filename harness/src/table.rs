@@ -52,6 +52,9 @@ pub struct FrameRow {
     pub t_sent: Option<i64>,
     /// The action in effect after this frame.
     pub action: i8,
+    /// Whether the speed governor sent 0 in place of the policy's action on
+    /// this frame.
+    pub governed: bool,
 }
 
 /// Buffers frame rows and writes them to an IPC stream in batches.
@@ -133,12 +136,13 @@ const HEAD: [&str; 5] = [
     "t_detect_start",
     "t_detected",
 ];
-const TAIL: [&str; 5] = [
+const TAIL: [&str; 6] = [
     "acted",
     "t_policy_start",
     "t_policy_done",
     "t_sent",
     "action",
+    "governed",
 ];
 
 fn duration() -> DataType {
@@ -172,6 +176,7 @@ fn frames_schema(metadata: HashMap<String, String>) -> SchemaRef {
     fields.push(Field::new(TAIL[0], DataType::Boolean, false));
     fields.extend(TAIL[1..4].iter().map(|n| Field::new(*n, duration(), true)));
     fields.push(Field::new(TAIL[4], DataType::Int8, false));
+    fields.push(Field::new(TAIL[5], DataType::Boolean, false));
     Arc::new(Schema::new_with_metadata(fields, metadata))
 }
 
@@ -195,6 +200,7 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
     let mut acted = BooleanBuilder::new();
     let mut policy_times: Vec<_> = (0..3).map(|_| DurationNanosecondBuilder::new()).collect();
     let mut action = Int8Builder::new();
+    let mut governed = BooleanBuilder::new();
 
     for r in rows {
         frame.append_value(r.frame);
@@ -232,6 +238,7 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
             b.append_option(t);
         }
         action.append_value(r.action);
+        governed.append_value(r.governed);
     }
 
     let mut columns: Vec<ArrayRef> = vec![Arc::new(frame.finish())];
@@ -249,6 +256,7 @@ fn frames_batch(schema: &SchemaRef, rows: &[FrameRow]) -> Result<RecordBatch> {
             .map(|b| Arc::new(b.finish()) as ArrayRef),
     );
     columns.push(Arc::new(action.finish()));
+    columns.push(Arc::new(governed.finish()));
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
 }
 
@@ -294,6 +302,7 @@ mod tests {
             t_policy_done: Some(14),
             t_sent: Some(15),
             action: -30,
+            governed: true,
         });
         table.flush().unwrap(); // two batches, to prove the stream concatenates
         table.push(FrameRow {
@@ -308,6 +317,7 @@ mod tests {
             t_policy_done: None,
             t_sent: None,
             action: -30,
+            governed: false,
         });
         assert_eq!(table.finish().unwrap(), 2);
 
@@ -334,6 +344,8 @@ mod tests {
         assert!(b.column_by_name("acted").unwrap().as_boolean().value(0));
         assert!(!c.column_by_name("acted").unwrap().as_boolean().value(0));
         assert!(c.column_by_name("t_policy_start").unwrap().is_null(0));
+        assert!(b.column_by_name("governed").unwrap().as_boolean().value(0));
+        assert!(!c.column_by_name("governed").unwrap().as_boolean().value(0));
         assert_eq!(
             c.column_by_name("action")
                 .unwrap()

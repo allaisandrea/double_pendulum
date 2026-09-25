@@ -240,6 +240,19 @@ policy was trained with it. It keeps the same rest cycle, which leaves the
 pendulum hanging for each swing-up. The metadata records `policy_file` and
 `policy_sample` in place of `policy_range` and `policy_step`.
 
+**The speed governor** brakes the motor, sending 0 in place of the
+policy's action, while the arm it drives (tag 0's) turns faster than
+`--max-speed` revolutions per second, measured over the last 3 frames. It
+is on at 2 rev/s with `--policy`, and off for the stand-in unless
+`--max-speed` is given, so that stand-in recordings stay as before; `0`
+turns it off. 2 rev/s is about the 90th percentile of the random walk's
+speeds, the range the world model has data for; `ppo-persistent`, the
+first trained policy on the rig, drove the arm at a median of 2.7 rev/s
+and brushed 8. Without tag 0 in the newest frame, or in the 3 before, the
+policy's action goes through. The table's `governed` column marks the
+frames it overrode, and the status line and summary count them; the
+`history` metadata counts the frames it needs too.
+
 **Output**: `recordings/<unix time>/frames.arrows`, an Arrow IPC stream,
 one row per frame that went through detection. A stream is readable up to
 its last batch even after a crash, and batches are written about once a
@@ -257,6 +270,7 @@ camera starts; run parameters are in the schema metadata.
 | `acted` | whether the policy acted on this frame, or skipped it while busy |
 | `t_policy_start`, `t_policy_done`, `t_sent` | policy ran, action written; null when skipped |
 | `action` | the action in effect after this frame |
+| `governed` | the speed governor sent 0 in place of the policy's action |
 
 While it runs, `collect` prints a status line every `--status-every-s` (10):
 frames and how often each tag was seen, actions sent and frames skipped, the

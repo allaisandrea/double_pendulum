@@ -21,6 +21,7 @@ use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::clock::{self, mono};
 use harness::constants::{HFOV_DEG, TAG_FAMILY, TAG_SIZE_M};
 use harness::latest::{Latest, Take};
+use harness::governor::Governor;
 use harness::mlp_policy::{MlpPolicy, TrainedPolicy};
 use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step};
 use harness::table::{self, FrameRow, Table, TagRow};
@@ -55,6 +56,12 @@ struct Args {
     /// rather than taking the likeliest, for varied training data
     #[arg(long)]
     policy_sample: bool,
+
+    /// Brake the motor (send 0 in place of the policy's action) while the arm
+    /// it drives turns faster than this, in revolutions per second; 0 never
+    /// brakes [default: 2 with --policy, 0 for the stand-in]
+    #[arg(long)]
+    max_speed: Option<f64>,
 
     /// Stand-in policy: the action walks within -range..=range. 0 sends only
     /// zeros, so nothing moves
@@ -142,6 +149,18 @@ fn main() -> Result<()> {
         latency,
         meta: policy_meta,
     } = make_policy(&args)?;
+    let default_speed = if args.policy.is_some() { 2.0 } else { 0.0 };
+    let max_speed = args.max_speed.unwrap_or(default_speed);
+    anyhow::ensure!(max_speed >= 0.0, "--max-speed must not be negative");
+    let governor = (max_speed > 0.0).then_some(Governor {
+        max_rev_s: max_speed,
+        span: 3,
+    });
+    // Frames kept before the first action: enough for the policy, and for
+    // the governor to measure speed.
+    let history_length = policy
+        .history_length()
+        .max(governor.as_ref().map_or(1, Governor::history_length));
     let out = output_dir(args.out.clone())?;
     let stop = stop_on_ctrl_c()?;
 
@@ -195,8 +214,12 @@ fn main() -> Result<()> {
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
-        ("history", policy.history_length().to_string()),
+        ("history", history_length.to_string()),
         ("policy", policy.describe()),
+        (
+            "governor",
+            governor.as_ref().map_or("none".into(), Governor::describe),
+        ),
         ("policy_latency_ns", latency.as_nanos().to_string()),
         ("active_ns", duty.active.as_nanos().to_string()),
         ("rest_ns", duty.rest.as_nanos().to_string()),
@@ -211,7 +234,7 @@ fn main() -> Result<()> {
     let frames = Table::create(&out.join("frames.arrows"), meta)?;
     let (row_tx, row_rx) = mpsc::channel::<FrameRow>();
     let status_every = Duration::from_secs_f64(args.status_every_s.max(0.0));
-    let warmup = policy.history_length() as u64 - 1;
+    let warmup = history_length as u64 - 1;
     let logger = thread::Builder::new()
         .name("logger".into())
         .spawn(move || log_loop(row_rx, frames, duty, status_every, warmup))?;
@@ -240,11 +263,14 @@ fn main() -> Result<()> {
         format!("{} s on, {} s rest", args.active_s, args.rest_s)
     };
     eprintln!("policy: {}", policy.describe());
+    if let Some(g) = &governor {
+        eprintln!("governor: {}", g.describe());
+    }
     let act = {
         let stop = stop.clone();
-        thread::Builder::new()
-            .name("policy".into())
-            .spawn(move || policy_loop(policy, det_rx, port, t0, row_tx, &stop))?
+        thread::Builder::new().name("policy".into()).spawn(move || {
+            policy_loop(policy, governor, history_length, det_rx, port, t0, row_tx, &stop)
+        })?
     };
     eprintln!(
         "recording to {} (seed {seed}, {cycle}); Ctrl-C to stop",
@@ -510,10 +536,15 @@ fn detect_loop(
 }
 
 /// Takes every detection that has arrived, acts on the newest, and sends
-/// the action at once. The older ones were skipped while the policy was
-/// busy: they join the history, and the table, with the action in effect.
+/// the action at once, or 0 if the governor brakes. The older ones were
+/// skipped while the policy was busy: they join the history, and the table,
+/// with the action in effect. `length` frames of history are kept; the
+/// policy gets the newest of them it asks for.
+#[allow(clippy::too_many_arguments)]
 fn policy_loop(
     mut policy: Box<dyn Policy>,
+    governor: Option<Governor>,
+    length: usize,
     from_detect: Receiver<Detected>,
     mut port: Box<dyn serialport::SerialPort>,
     t0: Duration,
@@ -528,7 +559,7 @@ fn policy_loop(
         poses: d.tags.map(|t| t.map(|t| t.pose)),
         action,
     };
-    let row = |d: Detected, action: i8, times: Option<[Duration; 3]>| FrameRow {
+    let row = |d: Detected, action: i8, times: Option<[Duration; 3]>, governed: bool| FrameRow {
         frame: d.frame,
         t_capture: ns(d.t_capture),
         t_arrival: ns(d.t_arrival),
@@ -540,10 +571,10 @@ fn policy_loop(
         t_policy_done: times.map(|t| ns(t[1])),
         t_sent: times.map(|t| ns(t[2])),
         action,
+        governed,
     };
     // The frames before the newest, oldest first, each with the action in
     // effect after it.
-    let length = policy.history_length();
     let mut history: VecDeque<Step> = VecDeque::with_capacity(length);
     let remember = |history: &mut VecDeque<Step>, s: Step| {
         if history.len() == length - 1 {
@@ -565,14 +596,14 @@ fn policy_loop(
             let newest = waiting.pop().expect("at least the first");
             for d in waiting {
                 remember(&mut history, step(&d, Some(current)));
-                let _ = rows.send(row(d, current, None));
+                let _ = rows.send(row(d, current, None, false));
             }
 
             if history.len() < length - 1 {
                 // The start of the recording: this frame only fills the
                 // history, and the startup 0 stays in effect.
                 remember(&mut history, step(&newest, Some(current)));
-                let _ = rows.send(row(newest, current, None));
+                let _ = rows.send(row(newest, current, None, false));
                 continue;
             }
 
@@ -584,7 +615,11 @@ fn policy_loop(
                     _ => history[history.len() - i].clone(),
                 })
                 .collect();
-            let action = policy.act(&input);
+            let asked = policy.act(&input[..policy.history_length()]);
+            let (action, governed) = match &governor {
+                Some(g) => g.limit(&input, asked),
+                None => (asked, false),
+            };
             let t_policy_done = mono();
             serial::send(port.as_mut(), action)?;
             let t_sent = mono();
@@ -594,6 +629,7 @@ fn policy_loop(
                 newest,
                 action,
                 Some([t_policy_start, t_policy_done, t_sent]),
+                governed,
             ));
         }
         Ok(())
@@ -673,6 +709,8 @@ struct Stats {
     /// Frames tags 0, 1 and 2 were each seen in.
     with_tag: [u64; 3],
     acted: u64,
+    /// Frames the governor sent 0 on in place of the policy's action.
+    governed: u64,
     /// Frames not acted on because the policy was busy, not counting the
     /// startup frames that only fill its history.
     skipped: u64,
@@ -700,6 +738,7 @@ impl Stats {
         match (r.t_policy_start, r.t_policy_done, r.t_sent) {
             (Some(start), Some(done), Some(sent)) => {
                 self.acted += 1;
+                self.governed += u64::from(r.governed);
                 self.wait_ms.push(ms(r.t_detected, start));
                 self.policy_ms.push(ms(start, done));
                 self.delay_ms.push(ms(r.t_capture, sent));
@@ -724,12 +763,13 @@ impl Stats {
             .collect();
         let max = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
         format!(
-            "[{:5.0} s]{phase} {} frames, tags {}% | {} actions, {} frames skipped | \
-             slowest detection {:.0} ms, slowest capture to send {:.0} ms",
+            "[{:5.0} s]{phase} {} frames, tags {}% | {} actions ({} governed), {} frames \
+             skipped | slowest detection {:.0} ms, slowest capture to send {:.0} ms",
             elapsed.as_secs_f64(),
             self.frames,
             tags.join("/"),
             self.acted,
+            self.governed,
             self.skipped,
             max(&self.detect_ms),
             max(&self.delay_ms),
@@ -757,6 +797,11 @@ impl Stats {
             self.warmup,
             self.skipped,
             100.0 * self.skipped as f64 / (self.acted + self.skipped).max(1) as f64
+        );
+        eprintln!(
+            "  governed: {} actions ({:.1}%) sent as 0, the arm too fast",
+            self.governed,
+            100.0 * self.governed as f64 / self.acted.max(1) as f64
         );
         eprintln!(
             "  queued after detection: {}",
