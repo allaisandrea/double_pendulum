@@ -3,7 +3,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from common.data_lib import ACTION_SCALE, Recording, Windows
+from common.data_lib import ACTION_SCALE, Batch, Recording, Windows
 from imagination.env_lib import ImaginedEnv, action_levels, reward
 
 STRAIGHT = torch.tensor([[0.0, -1.0]] * 3)
@@ -125,3 +125,30 @@ def test_an_environment_state_survives_a_save():
     other, _, _ = make_env()
     other.load_state_dict(state)
     assert torch.equal(other.obs, env.obs) and torch.equal(other.action, env.action)
+
+
+def test_an_arm_over_its_speed_limit_costs_the_square_of_the_excess():
+    # Every frame of the start has the arms at 0°; the model predicts 72°,
+    # 0° and 180° next: a fifth of a turn in 8 ms is 25 rev/s.
+    angles = torch.tensor([0.2, 0.0, 0.5]) * 2 * np.pi
+    frame = torch.stack([angles.sin(), angles.cos()], -1)
+    model = Recorder(3, frame, -20.0)
+    env = ImaginedEnv(model, action_levels(16, 9), 2, False, STRAIGHT, [20.0, 1.0, 30.0], 0.5)
+    zero = torch.tensor([[0.0, 1.0]] * 3)
+    env.reset_to(Batch(zero.expand(2, env.history, 3, 2).clone(), torch.ones(2, env.history, 3, dtype=torch.bool), torch.zeros(2, env.history)))
+    r = env.step(torch.tensor([4, 4]))
+    assert env.speed[0].tolist() == pytest.approx([25.0, 0.0, 62.5], rel=1e-4)
+    # Arm 0 is 5 over its limit, arm 2 32.5: 0.5 * (25 + 1056.25).
+    assert env.penalty.tolist() == pytest.approx([540.625] * 2, rel=1e-4)
+    assert (r + env.penalty).tolist() == pytest.approx(env.cos_sum.tolist(), abs=1e-3)
+
+
+def test_an_arm_never_seen_is_not_penalised():
+    angles = torch.tensor([0.2, 0.2, 0.2]) * 2 * np.pi
+    model = Recorder(3, torch.stack([angles.sin(), angles.cos()], -1), -20.0)
+    env = ImaginedEnv(model, action_levels(16, 9), 2, False, STRAIGHT, [1.0] * 3, 1.0)
+    present = torch.ones(1, env.history, 3, dtype=torch.bool)
+    present[..., 1] = False
+    env.reset_to(Batch(torch.tensor([[0.0, 1.0]] * 3).expand(1, env.history, 3, 2).clone(), present, torch.zeros(1, env.history)))
+    env.step(torch.tensor([4]))
+    assert env.speed[0, 1].item() == 0.0 and env.speed[0, 0].item() > 1.0

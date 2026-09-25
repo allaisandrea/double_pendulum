@@ -17,12 +17,11 @@ import imageio.v3 as iio
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from common.data_lib import correct_yaws
+from common.data_lib import FRAME_S, correct_yaws
 
 # Reference palette (dataviz skill), as in analysis/plot_yaw.py.
 ARMS = [(0x2A, 0x78, 0xD6), (0xEB, 0x68, 0x34), (0x1B, 0xAF, 0x7A)]
 SURFACE, TEXT, GRID = (0xFC, 0xFC, 0xFB), (0x0B, 0x0B, 0x0B), (0xE4, 0xE3, 0xDF)
-FRAME_S = 0.008
 # Frames are 16-pixel multiples, which H.264 encodes without resizing.
 SIZE = 512
 

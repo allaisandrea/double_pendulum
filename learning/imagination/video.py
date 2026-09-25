@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 
+from common.data_lib import FRAME_S
 from common.run_lib import pick_device
 from imagination.rollout_lib import from_hanging, load_policy, write_rollout_video
 from world_model.model_lib import load_world_model
@@ -40,7 +41,7 @@ def main():
     out = args.out or args.policy.with_name("rollout.mp4")
     if args.sample:
         torch.manual_seed(args.seed)
-    steps = round(args.seconds / 0.008)
+    steps = round(args.seconds / FRAME_S)
     run = from_hanging(agent, env, steps, args.seed, greedy=not args.sample)
     write_rollout_video(run, env, out, args.slowdown)
     print(f"{out}: {args.seconds} s, mean reward {run.reward.mean().item():.3f}")

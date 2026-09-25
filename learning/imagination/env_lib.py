@@ -12,6 +12,9 @@ predicts, when `sample_missing` is set, so the policy learns to cope with
 misses as it must on the rig. The reward comes from the prediction itself,
 seen or not: the sum of the cosines of the yaws, corrected so that each
 tag's hanging yaw reads 180°. A hanging arm scores -1, an upright one +1.
+With speed limits, each arm turning faster than its limit costs
+`speed_penalty` times the square of the excess, in revolutions per second,
+measured from the frame before.
 
 The world model works in the camera's raw yaws; only the reward, and what
 is drawn or measured as upright, use the corrected ones.
@@ -19,8 +22,10 @@ is drawn or measured as upright, use the corrected ones.
 import torch
 from torch.nn import functional as F
 
-from common.data_lib import ACTION_SCALE, NUM_TAGS, Batch, Windows, correct_yaws
-from world_model.model_lib import STEP_FEATURES, WorldModel, step_features
+import math
+
+from common.data_lib import ACTION_SCALE, FRAME_S, NUM_TAGS, Batch, Windows, correct_yaws
+from world_model.model_lib import STEP_FEATURES, WorldModel, last_seen, step_features
 
 INT8_MIN, INT8_MAX = -128, 127
 
@@ -43,11 +48,18 @@ class ImaginedEnv:
         policy_window: int,
         sample_missing: bool,
         hanging: torch.Tensor,
+        speed_limits=None,
+        speed_penalty: float = 0.0,
     ):
         """`hanging` [NUM_TAGS, 2] is the sin and cos of each tag's yaw with
-        the pendulum hanging still, from `hanging_yaws`."""
+        the pendulum hanging still, from `hanging_yaws`. `speed_limits` are
+        each arm's in revolutions per second; None has none."""
         self.model = model
-        self.hanging = hanging.to(model.delta_scale.device)
+        device = model.delta_scale.device
+        self.hanging = hanging.to(device)
+        limits = speed_limits if speed_limits is not None else [math.inf] * NUM_TAGS
+        self.speed_limits = torch.tensor(limits, dtype=torch.float32, device=device)
+        self.speed_penalty = speed_penalty
         self.policy_window = policy_window
         self.history = max(model.window, policy_window + 1)
         self.levels = levels.to(model.delta_scale.device)
@@ -79,13 +91,19 @@ class ImaginedEnv:
         self.obs.index_copy_(0, index, batch.obs)
         self.present.index_copy_(0, index, batch.present)
         self.action.index_copy_(0, index, batch.action)
+        last, known = last_seen(batch.obs, batch.present)
+        self.last.index_copy_(0, index, last)
+        self.known.index_copy_(0, index, known)
+
+    STATE = ("obs", "present", "action", "last", "known")
 
     def state_dict(self) -> dict:
-        return {"obs": self.obs.cpu(), "present": self.present.cpu(), "action": self.action.cpu()}
+        return {k: getattr(self, k).cpu() for k in self.STATE}
 
     def load_state_dict(self, state: dict):
         device = self.hanging.device
-        self.reset_to(Batch(*(state[k].to(device) for k in ("obs", "present", "action"))))
+        for k in self.STATE:
+            setattr(self, k, state[k].to(device))
 
     def reset_hanging(self, envs: int):
         """Starts `envs` environments from the pendulum hanging still: every
@@ -105,6 +123,9 @@ class ImaginedEnv:
         self.obs = batch.obs.clone()
         self.present = batch.present.clone()
         self.action = batch.action.clone()
+        # Each arm's latest frame, to measure its speed from, and whether
+        # there is one.
+        self.last, self.known = last_seen(self.obs, self.present)
 
     def observe(self) -> torch.Tensor:
         """The policy's input [N, features]: the latest `policy_window`
@@ -116,7 +137,8 @@ class ImaginedEnv:
     @torch.no_grad()
     def step(self, bin_index: torch.Tensor) -> torch.Tensor:
         """Acts on the newest frame with the action in each bin [N]; returns
-        the reward [N] of the frame that follows."""
+        the reward [N] of the frame that follows, net of the speed penalty.
+        Its parts stay in `cos_sum` and `penalty`, each arm's speed in `speed`."""
         self.action[:, -1] = self.actions[bin_index]
         w = self.model.window
         nxt, logit, _, _ = self.model.predict(
@@ -137,7 +159,21 @@ class ImaginedEnv:
         self.present = torch.cat([self.present[:, 1:], seen[:, None]], dim=1)
         # The new frame's action is the policy's next choice.
         self.action = torch.cat([self.action[:, 1:], torch.zeros_like(self.action[:, :1])], dim=1)
-        return reward(correct_yaws(nxt, self.hanging))
+
+        self.speed = speed(self.last, nxt) * self.known
+        over = (self.speed - self.speed_limits).clamp(min=0)
+        self.penalty = self.speed_penalty * over.square().sum(-1)
+        self.cos_sum = reward(correct_yaws(nxt, self.hanging))
+        self.last, self.known = nxt, torch.ones_like(self.known)
+        return self.cos_sum - self.penalty
+
+
+def speed(before: torch.Tensor, after: torch.Tensor) -> torch.Tensor:
+    """Each arm's speed [..., NUM_TAGS] in revolutions per second, between
+    frames [..., NUM_TAGS, 2] one apart."""
+    turned = torch.atan2(after[..., 0], after[..., 1]) - torch.atan2(before[..., 0], before[..., 1])
+    turned = torch.remainder(turned + math.pi, 2 * math.pi) - math.pi
+    return turned.abs() / (2 * math.pi * FRAME_S)
 
 
 def reward(obs: torch.Tensor) -> torch.Tensor:

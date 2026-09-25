@@ -17,6 +17,8 @@ import pyarrow.ipc as ipc
 import torch
 
 NUM_TAGS = 3
+# Seconds between camera frames (125 fps).
+FRAME_S = 0.008
 POSE_LEN = 7
 # Actions are int8; dividing by this maps their whole range into [-1, 1),
 # leaving room for policies that go beyond the random walk's ±60.

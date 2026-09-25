@@ -10,6 +10,13 @@ action_bins = 9
 policy_window = 16
 # Drop tags from imagined frames as often as the world model predicts.
 sample_missing = true
+# Each arm turning faster than its limit, in revolutions per second, costs
+# speed_penalty times the square of the excess, per frame. The limits sit a
+# little under the random walk's 90th percentiles (2.3, 2.7 and 6.8 rev/s),
+# the speeds the world model has data for; the first arm's matches the
+# harness's governor.
+speed_limits_rev_s = [2.0, 2.5, 6.5]
+speed_penalty = 1.0
 
 hidden = 256
 layers = 2

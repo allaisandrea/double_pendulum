@@ -39,7 +39,7 @@ from pathlib import Path
 import torch
 import wandb
 
-from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
+from common.data_lib import FRAME_S, Windows, correct_yaws, hanging_yaws, load_recordings
 from common.run_lib import Timer, git_commit, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid_scheduler
 from imagination.agent_lib import Agent
@@ -52,24 +52,29 @@ from world_model.model_lib import load_world_model
 def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
     """The evaluation's metrics, and its rollout.
 
-    The critic is checked against the rollout's actual discounted return,
-    in the critic's units (rewards scaled by 1 - gamma), over the frames
-    early enough for the rest of the rollout to measure it. The rollout is
-    greedy while the critic values the sampling policy, so some bias is
-    expected.
+    `eval/reward` is the sum of the cosines, as it was before speed
+    limits, and `eval/speed_penalty` what the limits cost on top; the
+    policy maximises the difference. The critic is checked against the
+    rollout's actual discounted return, net of the penalty, in the
+    critic's units (rewards scaled by 1 - gamma), over the frames early
+    enough for the rest of the rollout to measure it. The rollout is greedy
+    while the critic values the sampling policy, so some bias is expected.
     """
     gamma = cfg["gamma"]
     run = from_hanging(agent, env, cfg["eval_steps"], cfg["eval_seed"])
     actual = discounted_returns(run.reward[:, 0] * (1 - gamma), gamma)
     value = run.value[: len(actual), 0]
     metrics = {
-        "eval/reward": run.reward.mean().item(),
+        "eval/reward": (run.reward + run.penalty).mean().item(),
+        "eval/speed_penalty": run.penalty.mean().item(),
+        # The first frame's speed is measured from the start, not a step.
+        **{f"eval/speed/arm{i}": v.item() for i, v in enumerate(run.speed[1:, 0].median(0).values)},
         "eval/upright": upright(correct_yaws(run.prediction, env.hanging)).float().mean().item(),
         "eval/mean_abs_action": run.action.abs().float().mean().item(),
         "eval/value_hanging": run.value[0, 0].item(),
     }
     if len(actual):
-        seconds = (torch.arange(len(actual)) * 0.008).tolist()
+        seconds = (torch.arange(len(actual)) * FRAME_S).tolist()
         metrics |= {
             "eval/value_error": (value - actual).abs().mean().item(),
             "eval/value_bias": (value - actual).mean().item(),
@@ -124,9 +129,18 @@ def main(argv=None):
     levels = action_levels(cfg["action_step"], cfg["action_bins"])
     recordings = load_recordings(Path(cfg["data_dir"]), cfg["recordings"])
     hanging = hanging_yaws(recordings)
-    env = ImaginedEnv(model, levels, cfg["policy_window"], cfg["sample_missing"], hanging)
+    env_args = (
+        model,
+        levels,
+        cfg["policy_window"],
+        cfg["sample_missing"],
+        hanging,
+        cfg.get("speed_limits_rev_s"),
+        cfg.get("speed_penalty", 0.0),
+    )
+    env = ImaginedEnv(*env_args)
     # Evaluating resets its environment, so it gets one of its own.
-    eval_env = ImaginedEnv(model, levels, cfg["policy_window"], cfg["sample_missing"], hanging)
+    eval_env = ImaginedEnv(*env_args)
     starts = Windows(recordings, env.history, device)
     T, N, gamma = cfg["rollout_steps"], cfg["num_envs"], cfg["gamma"]
     reset_p = (1 - gamma) / cfg["reset_horizons"]
@@ -180,6 +194,7 @@ def main(argv=None):
     logp_buf = torch.zeros(T, N, device=device)
     value_buf = torch.zeros(T, N, device=device)
     reward_buf = torch.zeros(T, N, device=device)
+    penalty_buf = torch.zeros(T, N, device=device)
     next_value_buf = torch.zeros(T, N, device=device)
     reset_buf = torch.zeros(T, N, dtype=torch.bool, device=device)
     up_buf = torch.zeros(T, N, device=device)
@@ -218,6 +233,7 @@ def main(argv=None):
                 x_buf[t], bin_buf[t], logp_buf[t] = x, bins, dist.log_prob(bins)
                 value_buf[t] = agent.value(x)
                 reward_buf[t] = env.step(bins)
+                penalty_buf[t] = env.penalty
                 up_buf[t] = upright(correct_yaws(env.prediction, env.hanging)).float()
                 # The value of where each episode was going, even if it now resets.
                 x = env.observe()
@@ -254,7 +270,8 @@ def main(argv=None):
         metrics = {k: torch.stack([s[k] for s in stats]).mean().item() for k in stats[0]}
         metrics = {f"train/{k}": v for k, v in metrics.items()}
         metrics |= {
-            "train/reward": reward_buf.mean().item(),
+            "train/reward": (reward_buf + penalty_buf).mean().item(),
+            "train/speed_penalty": penalty_buf.mean().item(),
             "train/resets": reset_buf.sum().item(),
             "train/upright": up_buf.mean().item(),
             "train/explained_variance": (1 - (rets - values).var() / rets.var()).item(),

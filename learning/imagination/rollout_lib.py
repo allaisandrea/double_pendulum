@@ -16,7 +16,9 @@ class Rollout:
     prediction: torch.Tensor  # [T, N, NUM_TAGS, 2]: each predicted frame
     seen: torch.Tensor  # [T, N, NUM_TAGS]: whether each tag was kept as seen
     action: torch.Tensor  # [T, N]: the int8 action taken on the frame before
-    reward: torch.Tensor  # [T, N]
+    reward: torch.Tensor  # [T, N]: net of the speed penalty
+    penalty: torch.Tensor  # [T, N]: the speed penalty
+    speed: torch.Tensor  # [T, N, NUM_TAGS]: each arm's speed, revolutions per second
     value: torch.Tensor  # [T, N]: the critic's value of the state each action was chosen in
 
 
@@ -24,13 +26,15 @@ class Rollout:
 def closed_loop(agent: Agent, env: ImaginedEnv, steps: int, greedy: bool = True) -> Rollout:
     """Runs the policy for `steps` frames from the environments' current
     state, taking its likeliest action or sampling one."""
-    out = {k: [] for k in ("prediction", "seen", "action", "reward", "value")}
+    out = {k: [] for k in ("prediction", "seen", "action", "reward", "penalty", "speed", "value")}
     for _ in range(steps):
         x = env.observe()
         dist = agent.policy(x)
         out["value"].append(agent.value(x))
         bins = dist.probs.argmax(-1) if greedy else dist.sample()
         out["reward"].append(env.step(bins))
+        out["penalty"].append(env.penalty)
+        out["speed"].append(env.speed)
         out["prediction"].append(env.prediction)
         out["seen"].append(env.present[:, -1])
         out["action"].append(env.levels[bins])
@@ -81,7 +85,15 @@ def load_policy(path, device) -> tuple[Agent, ImaginedEnv, dict]:
     if hanging is None:
         hanging = hanging_yaws(load_recordings(Path(cfg["data_dir"]), cfg["recordings"]))
     model = load_world_model(cfg["world_model"], device)
-    env = ImaginedEnv(model, levels, cfg["policy_window"], cfg["sample_missing"], hanging)
+    env = ImaginedEnv(
+        model,
+        levels,
+        cfg["policy_window"],
+        cfg["sample_missing"],
+        hanging,
+        cfg.get("speed_limits_rev_s"),
+        cfg.get("speed_penalty", 0.0),
+    )
     agent = Agent(ck["features"], cfg["hidden"], cfg["layers"], len(levels)).to(device)
     agent.load_state_dict(ck["agent"])
     return agent.eval(), env, cfg

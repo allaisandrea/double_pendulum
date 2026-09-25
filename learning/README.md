@@ -101,6 +101,13 @@ world model steps.
   ends of the recorded rests, since a tag mounted slightly turned reads a
   few degrees off 180° there; they are saved in the policy checkpoint. The
   world model still works in raw camera yaws.
+- **The speed penalty**: each arm turning faster than its limit in
+  `speed_limits_rev_s` costs `speed_penalty` times the square of the
+  excess in revolutions per second, per frame, measured between
+  consecutive imagined frames. The limits (2, 2.5 and 6.5 rev/s in
+  `base.toml`) sit a little under the random walk's 90th percentiles, the
+  speeds the world model has data for; the first arm's matches the
+  harness's speed governor. The policy maximises the reward net of it.
 
 ```sh
 uv run python -m imagination.train imagination/configs/base.toml --name first
@@ -164,7 +171,9 @@ share that range: a policy that holds 0 per frame is worth about 0.
 Logged every iteration, from its `rollout_steps` frames in each of the
 `num_envs` environments, with actions sampled from the policy:
 
-- `train/reward`: the mean reward per frame over the iteration.
+- `train/reward`: the mean reward per frame over the iteration, the sum
+  of cosines before the speed penalty.
+- `train/speed_penalty`: the mean speed penalty per frame.
 - `train/resets`: how many environments started again from a recorded
   window during the iteration.
 - `train/upright`: the share of frames with every arm within 30° of
@@ -215,7 +224,10 @@ And, for the run itself:
 
 Logged at each evaluation (see above):
 
-- `eval/reward`: the mean reward per frame over the rollout.
+- `eval/reward`: the mean reward per frame over the rollout, before the
+  speed penalty.
+- `eval/speed_penalty`: the mean speed penalty per frame.
+- `eval/speed/arm<i>`: each arm's median speed, in revolutions per second.
 - `eval/upright`: the share of its frames with every arm within 30° of
   upright.
 - `eval/mean_abs_action`: the mean |action|, in int8 units (64 means always
@@ -223,7 +235,8 @@ Logged at each evaluation (see above):
 - `eval/value_hanging`: the critic's value of the hanging start.
 - `eval/value_error`, `eval/value_bias`: the mean absolute and mean signed
   difference between the critic's value along the rollout and the
-  discounted return the rollout actually earned from there. Only frames
+  discounted return, net of the speed penalty, the rollout actually
+  earned from there. Only frames
   with enough of the rollout ahead to measure that return count (the
   discount falls to 1%): the first 2.6 s of 10 at `gamma` 0.995. The
   rollout is greedy while the critic values the sampling policy, so some
