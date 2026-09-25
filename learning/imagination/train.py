@@ -4,9 +4,15 @@
     uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
     uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_000100.pt
 
-Each iteration starts `num_envs` environments from real windows of the
-recordings, runs them for `episode_steps` frames with actions sampled from
-the policy, and updates the policy on that batch. Rewards are scaled by
+`num_envs` environments start from real windows of the recordings and
+carry on from one iteration to the next. Each iteration runs them for
+`rollout_steps` frames with actions sampled from the policy, and updates
+the policy on that batch. After each frame, each environment starts again
+from a new window with probability (1 - gamma) / `reset_horizons`, so
+episodes last `reset_horizons` / (1 - gamma) frames on average: with
+`reset_horizons` 1, the states are weighted as the discounted objective
+weights them. A reset is a truncation, so the return is bootstrapped from
+the state the episode would have gone on to. Rewards are scaled by
 1 - gamma for the critic, which puts returns in about [-3, 3].
 
 Every `eval_every` iterations the policy is evaluated: one rollout of
@@ -119,7 +125,11 @@ def main(argv=None):
     recordings = load_recordings(Path(cfg["data_dir"]), cfg["recordings"])
     hanging = hanging_yaws(recordings)
     env = ImaginedEnv(model, levels, cfg["policy_window"], cfg["sample_missing"], hanging)
+    # Evaluating resets its environment, so it gets one of its own.
+    eval_env = ImaginedEnv(model, levels, cfg["policy_window"], cfg["sample_missing"], hanging)
     starts = Windows(recordings, env.history, device)
+    T, N, gamma = cfg["rollout_steps"], cfg["num_envs"], cfg["gamma"]
+    reset_p = (1 - gamma) / cfg["reset_horizons"]
 
     agent = Agent(env.features, cfg["hidden"], cfg["layers"], len(levels)).to(device)
     opt = torch.optim.Adam(agent.parameters(), lr=cfg["lr"], eps=1e-5)
@@ -135,9 +145,12 @@ def main(argv=None):
         generator.set_state(ck["rng"]["generator"])
         set_rng_state(ck["rng"]["torch"], device)
         timer = Timer(device, ck["time"])
+        env.load_state_dict(ck["envs"])
         first = ck["iteration"] + 1
         if first > cfg["iterations"]:
             raise SystemExit(f"{args.resume} is from the last iteration: nothing to resume")
+    else:
+        env.reset(starts, starts.sample(N, generator))
 
     run = wandb.init(
         project=cfg["wandb_project"],
@@ -160,7 +173,6 @@ def main(argv=None):
         f" hanging yaws {', '.join(f'{d:.1f}°' for d in hanging_deg)}"
     )
 
-    T, N, gamma = cfg["episode_steps"], cfg["num_envs"], cfg["gamma"]
     batch = T * N
     minibatch = batch // cfg["minibatches"]
     x_buf = torch.zeros(T, N, env.features, device=device)
@@ -168,6 +180,8 @@ def main(argv=None):
     logp_buf = torch.zeros(T, N, device=device)
     value_buf = torch.zeros(T, N, device=device)
     reward_buf = torch.zeros(T, N, device=device)
+    next_value_buf = torch.zeros(T, N, device=device)
+    reset_buf = torch.zeros(T, N, dtype=torch.bool, device=device)
     up_buf = torch.zeros(T, N, device=device)
 
     def save(it):
@@ -182,6 +196,7 @@ def main(argv=None):
                 "optimizer": opt.state_dict(),
                 "scheduler": sched.state_dict(),
                 "iteration": it,
+                "envs": env.state_dict(),
                 "rng": {"generator": generator.get_state(), "torch": rng_state(device)},
                 "time": timer.totals,
                 "wandb_id": run.id,
@@ -192,19 +207,30 @@ def main(argv=None):
 
     for it in range(first, cfg["iterations"] + 1):
         with timer("rollout"), torch.no_grad():
-            env.reset(starts, starts.sample(N, generator))
+            x = env.observe()
             for t in range(T):
-                x = env.observe()
                 dist = agent.policy(x)
                 bins = dist.sample()
                 x_buf[t], bin_buf[t], logp_buf[t] = x, bins, dist.log_prob(bins)
                 value_buf[t] = agent.value(x)
                 reward_buf[t] = env.step(bins)
                 up_buf[t] = upright(correct_yaws(env.prediction, env.hanging)).float()
-            last_value = agent.value(env.observe())
+                # The value of where each episode was going, even if it now resets.
+                x = env.observe()
+                next_value_buf[t] = agent.value(x)
+                reset = (torch.rand(N, generator=generator) < reset_p).to(device)
+                reset_buf[t] = reset
+                if reset.any():
+                    env.restart(reset, starts, generator)
+                    x = env.observe()
         with timer("advantages"), torch.no_grad():
             advantages, returns = gae(
-                reward_buf * (1 - gamma), value_buf, last_value, gamma, cfg["gae_lambda"]
+                reward_buf * (1 - gamma),
+                value_buf,
+                next_value_buf,
+                reset_buf,
+                gamma,
+                cfg["gae_lambda"],
             )
 
         with timer("update"):
@@ -227,7 +253,7 @@ def main(argv=None):
         metrics = {f"train/{k}": v for k, v in metrics.items()}
         metrics |= {
             "train/reward": reward_buf.mean().item(),
-            "train/reward_last_step": reward_buf[-1].mean().item(),
+            "train/resets": reset_buf.sum().item(),
             "train/upright": up_buf.mean().item(),
             "train/explained_variance": (1 - (rets - values).var() / rets.var()).item(),
             "train/value_mean": values.mean().item(),
@@ -237,7 +263,7 @@ def main(argv=None):
         evaluated = it % cfg["eval_every"] == 0 or it == cfg["iterations"]
         if evaluated:
             with timer("eval"):
-                eval_metrics, eval_run = evaluate(agent, env, cfg)
+                eval_metrics, eval_run = evaluate(agent, eval_env, cfg)
             metrics |= eval_metrics
         if it % cfg["checkpoint_every"] == 0 or it == cfg["iterations"]:
             with timer("checkpoint"):
@@ -256,7 +282,7 @@ def main(argv=None):
         wandb.log(metrics, step=it)
 
     video = out / "rollout.mp4"
-    write_rollout_video(eval_run, env, video)
+    write_rollout_video(eval_run, eval_env, video)
     wandb.log({"rollout_from_hanging": wandb.Video(str(video), format="mp4")}, step=cfg["iterations"])
     run.finish()
 

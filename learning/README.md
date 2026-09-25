@@ -78,9 +78,16 @@ reading it as an error curve.
 `ppo_continuous_action_isaacgym.py`) in a batch of environments that the
 world model steps.
 
-- **An episode** starts from a real window of the recordings and runs
-  `episode_steps` frames. Episodes end only by truncation, so returns are
-  bootstrapped from the critic's value of the state after the last step.
+- **Episodes** start from real windows of the recordings. The `num_envs`
+  environments carry on across iterations, each iteration running them
+  for `rollout_steps` frames. After each frame, an environment starts
+  again from a new window with probability (1 − `gamma`) /
+  `reset_horizons`, so episodes last `reset_horizons` / (1 − `gamma`)
+  frames on average (400, 3.2 s, in `base.toml`). With `reset_horizons` 1,
+  states are weighted as the discounted objective weights them; larger
+  values give the long run more weight. Episodes end only by truncation,
+  so returns are bootstrapped from the critic's value of the state an
+  episode would have gone on to, at a reset as at the end of an iteration.
 - **The policy** sees the latest `policy_window` frames, each with the
   action before it. It picks one of `action_bins` int8 actions,
   `action_step` apart and centred on 0 (−64 … 64 in `base.toml`, just past
@@ -102,8 +109,8 @@ uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_0
 ```
 
 Every `checkpoint_every` iterations, and at the end, the whole training
-state (policy and critic, optimizer, schedule, iteration, random
-generators, times and W&B run id) goes to
+state (policy and critic, optimizer, schedule, iteration, the
+environments, random generators, times and W&B run id) goes to
 `runs/policy/<name>/checkpoints/iter_NNNNNN.pt`, and a copy to
 `runs/policy/<name>/policy.pt`. `--resume` continues from a checkpoint
 with the config it saved, in the same directory and W&B run, and
@@ -141,17 +148,16 @@ Rewards are per frame: the sum of the three arms' corrected cosines, from
 critic's units, discounted sums of rewards scaled by 1 − `gamma`, so they
 share that range: a policy that holds 0 per frame is worth about 0.
 
-Logged every iteration, from its `num_envs` episodes of `episode_steps`
-frames, started from random windows of the recordings, with actions
-sampled from the policy:
+Logged every iteration, from its `rollout_steps` frames in each of the
+`num_envs` environments, with actions sampled from the policy:
 
-- `train/reward`: the mean reward per frame over the episodes.
-- `train/reward_last_step`: the mean reward on their last frame, once the
-  policy has had the episode to act.
+- `train/reward`: the mean reward per frame over the iteration.
+- `train/resets`: how many environments started again from a recorded
+  window during the iteration.
 - `train/upright`: the share of frames with every arm within 30° of
   upright.
 - `train/value_mean`, `train/return_mean`: the mean of the critic's values
-  over the episodes, and of the return targets it is trained towards
+  over the iteration, and of the return targets it is trained towards
   (GAE's advantages plus the values).
 - `train/explained_variance`: 1 − Var(target − value) / Var(target), with
   the values from before the update. 1 means the critic predicts its
@@ -167,7 +173,7 @@ Averaged over the minibatch updates of each iteration:
 - `train/entropy`: the entropy of the policy's action distribution, in
   nats: ln 9 ≈ 2.20 when uniform over the 9 bins, 0 when certain.
 - `train/approx_kl`: an estimate of how far each update moved the policy
-  from the one that collected the episodes.
+  from the one that collected the iteration's frames.
 - `train/clipfrac`: the share of samples whose probability ratio left
   1 ± `clip`, where the loss stops rewarding the change.
 
@@ -177,10 +183,10 @@ And, for the run itself:
 - `time/<phase>_s`: seconds spent this iteration in each phase. The
   device is synchronised at each phase's start and end, so the times are
   the work done, not merely queued.
-  - `time/rollout_s`: collecting the episodes: resetting the
-    environments, and per frame the policy's and critic's forward passes
-    and the world model's step.
-  - `time/advantages_s`: GAE over the episodes.
+  - `time/rollout_s`: collecting the iteration's frames: per frame, the
+    policy's and critic's forward passes, the world model's step, and
+    restarting the environments that reset.
+  - `time/advantages_s`: GAE over the iteration's frames.
   - `time/update_s`: PPO's `update_epochs` passes over the batch in
     `minibatches` minibatches, and the schedule's step.
   - `time/eval_s`: the evaluation rollout and its metrics, on iterations

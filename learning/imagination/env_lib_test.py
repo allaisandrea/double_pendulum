@@ -103,3 +103,25 @@ def test_a_hanging_start_is_still_and_seen():
     assert env.obs.shape == (4, env.history, 3, 2)
     assert torch.equal(env.obs, STRAIGHT.expand_as(env.obs))
     assert env.present.all() and (env.action == 0).all()
+
+
+def test_restarting_replaces_only_the_chosen_environments():
+    env, _, _ = make_env()
+    before = env.obs.clone()
+    starts = Windows(
+        [Recording("s", torch.ones(10, 3, 2).numpy(), torch.ones(10, 3, dtype=torch.bool).numpy(), torch.zeros(10).numpy())],
+        env.history,
+        "cpu",
+    )
+    env.restart(torch.tensor([False, True]), starts, torch.Generator().manual_seed(0))
+    assert torch.equal(env.obs[0], before[0])
+    assert (env.obs[1] == 1).all()
+
+
+def test_an_environment_state_survives_a_save():
+    env, _, _ = make_env()
+    env.step(torch.tensor([8, 0]))
+    state = env.state_dict()
+    other, _, _ = make_env()
+    other.load_state_dict(state)
+    assert torch.equal(other.obs, env.obs) and torch.equal(other.action, env.action)

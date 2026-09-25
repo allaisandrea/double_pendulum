@@ -14,10 +14,15 @@ sample_missing = true
 hidden = 256
 layers = 2
 
-# Each iteration runs num_envs episodes of episode_steps frames (8 ms each),
-# then takes update_epochs passes over them in minibatches.
+# num_envs environments carry on across iterations. Each iteration runs
+# them for rollout_steps frames (8 ms each), then takes update_epochs passes
+# over them in minibatches. After each frame an environment starts again
+# from a recorded window with probability (1 - gamma) / reset_horizons:
+# episodes last reset_horizons / (1 - gamma) frames on average, 400 (3.2 s)
+# here.
 num_envs = 4096
-episode_steps = 64
+rollout_steps = 64
+reset_horizons = 2
 iterations = 500
 update_epochs = 4
 minibatches = 8

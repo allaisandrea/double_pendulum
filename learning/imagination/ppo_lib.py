@@ -1,7 +1,9 @@
 """PPO's advantage estimate and loss, after CleanRL's ppo_continuous_action_isaacgym.py.
 
 Episodes here only end by truncation, so the return is always bootstrapped
-from the critic's value of the state after the last step, never from 0.
+from the critic's value of the state after the last step, never from 0:
+at the end of the rollout, and where an environment was reset, from the
+state it would have gone on to.
 """
 import math
 
@@ -11,17 +13,16 @@ from torch.nn import functional as F
 from imagination.agent_lib import Agent
 
 
-def gae(rewards, values, last_value, gamma: float, lam: float):
-    """Advantages and returns [T, N] from rewards and values [T, N] and the
-    value [N] of the state after the last step."""
+def gae(rewards, values, next_values, reset, gamma: float, lam: float):
+    """Advantages and returns [T, N] from rewards and values [T, N], the
+    value [T, N] of the state each step led to, and whether [T, N] the
+    environment was reset after the step; advantages stop at a reset."""
     advantages = torch.zeros_like(rewards)
-    running = torch.zeros_like(last_value)
-    next_value = last_value
+    running = torch.zeros_like(rewards[0])
     for t in reversed(range(len(rewards))):
-        delta = rewards[t] + gamma * next_value - values[t]
-        running = delta + gamma * lam * running
+        delta = rewards[t] + gamma * next_values[t] - values[t]
+        running = delta + gamma * lam * running * (~reset[t])
         advantages[t] = running
-        next_value = values[t]
     return advantages, advantages + values
 
 

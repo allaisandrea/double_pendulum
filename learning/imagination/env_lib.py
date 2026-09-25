@@ -67,6 +67,24 @@ class ImaginedEnv:
         assert starts.length == self.history
         self.reset_to(starts.gather(index))
 
+    def restart(self, which: torch.Tensor, starts: Windows, generator: torch.Generator):
+        """Starts the environments where `which` [N] holds again, each from
+        a window of `starts` drawn with `generator`."""
+        n = int(which.sum())
+        if n == 0:
+            return
+        batch = starts.gather(starts.sample(n, generator))
+        self.obs[which] = batch.obs
+        self.present[which] = batch.present
+        self.action[which] = batch.action
+
+    def state_dict(self) -> dict:
+        return {"obs": self.obs.cpu(), "present": self.present.cpu(), "action": self.action.cpu()}
+
+    def load_state_dict(self, state: dict):
+        device = self.hanging.device
+        self.reset_to(Batch(*(state[k].to(device) for k in ("obs", "present", "action"))))
+
     def reset_hanging(self, envs: int):
         """Starts `envs` environments from the pendulum hanging still: every
         frame of the history at the hanging yaws, every tag seen, action 0."""
