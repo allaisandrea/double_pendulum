@@ -68,15 +68,17 @@ class ImaginedEnv:
         self.reset_to(starts.gather(index))
 
     def restart(self, which: torch.Tensor, starts: Windows, generator: torch.Generator):
-        """Starts the environments where `which` [N] holds again, each from
-        a window of `starts` drawn with `generator`."""
+        """Starts the environments where `which` [N], on the CPU, holds
+        again, each from a window of `starts` drawn with `generator`.
+        Keeping `which` on the CPU spares waiting for the device to count."""
         n = int(which.sum())
         if n == 0:
             return
         batch = starts.gather(starts.sample(n, generator))
-        self.obs[which] = batch.obs
-        self.present[which] = batch.present
-        self.action[which] = batch.action
+        index = which.nonzero().squeeze(1).to(self.hanging.device)
+        self.obs.index_copy_(0, index, batch.obs)
+        self.present.index_copy_(0, index, batch.present)
+        self.action.index_copy_(0, index, batch.action)
 
     def state_dict(self) -> dict:
         return {"obs": self.obs.cpu(), "present": self.present.cpu(), "action": self.action.cpu()}

@@ -207,6 +207,10 @@ def main(argv=None):
 
     for it in range(first, cfg["iterations"] + 1):
         with timer("rollout"), torch.no_grad():
+            # The iteration's resets, drawn at once on the CPU, so that no
+            # frame waits on the device to learn which environments reset.
+            resets = torch.rand(T, N, generator=generator) < reset_p
+            reset_buf.copy_(resets)
             x = env.observe()
             for t in range(T):
                 dist = agent.policy(x)
@@ -218,10 +222,8 @@ def main(argv=None):
                 # The value of where each episode was going, even if it now resets.
                 x = env.observe()
                 next_value_buf[t] = agent.value(x)
-                reset = (torch.rand(N, generator=generator) < reset_p).to(device)
-                reset_buf[t] = reset
-                if reset.any():
-                    env.restart(reset, starts, generator)
+                if resets[t].any():
+                    env.restart(resets[t], starts, generator)
                     x = env.observe()
         with timer("advantages"), torch.no_grad():
             advantages, returns = gae(
