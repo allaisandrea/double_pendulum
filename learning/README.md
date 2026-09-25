@@ -45,18 +45,28 @@ name. The run's evaluation sample and latest checkpoint go to
 
 ### Metrics
 
-Every `eval_every` steps, training pauses to evaluate on a fixed sample of
-windows from each split: the same sample every time, drawn from `seed`.
-From each window it rolls the model forward open loop for `max(horizons)`
-frames with the recorded actions. Each prediction is fed back as seen,
-with its sine and cosine put back on the unit circle.
+Logged every `log_every` steps, on the batch just trained on:
 
-- `{train,val}/one_minus_r2/hNNN`: 1 − R² at horizon N, where R² measures
-  the predicted change against the actual change since each tag was last
-  seen in the starting window. 0 is perfect.
+- `train/batch_mse`: the squared error of the predicted change, in units
+  of `delta_scale` (the typical one-frame change), over the tags seen in
+  the next frame.
+- `train/batch_bce`: the cross-entropy of the missing-tag logits.
+- `lr`: the learning rate, following the trapezoid.
+
+Every `eval_every` steps, training pauses to evaluate on a fixed sample of
+windows from each split (`train` and `val`): the same sample every time,
+drawn from `seed`. From each window it rolls the model forward open loop
+for `max(horizons)` frames with the recorded actions. Each prediction is
+fed back as seen, with its sine and cosine put back on the unit circle.
+
+- `{train,val}/mse`, `{train,val}/bce`: the two loss terms at one step, as
+  above.
+- `{train,val}/one_minus_r2/hNNN`: 1 − R² at horizon N frames, where R²
+  measures the predicted change against the actual change since each tag
+  was last seen in the starting window, over the tags seen at that frame.
+  0 is perfect.
 - `{train,val}/copy_last/hNNN`: the same score for predicting no change,
   which comes out at about 1. It is the reference line.
-- `{train,val}/mse`, `{train,val}/bce`: the two loss terms at one step.
 
 Because the change being predicted grows with the horizon, 1 − R² need not
 increase monotonically with it. Compare one horizon across runs rather than
@@ -91,17 +101,13 @@ uv run python -m imagination.train imagination/configs/base.toml --name smoke --
 ```
 
 `world_model` in the config names the checkpoint to use. Every
-`eval_every` iterations the checkpoint goes to `runs/policy/<name>/policy.pt` and
-the policy is evaluated: one rollout of `eval_steps` frames (10 s) from
-the pendulum hanging still, at each tag's mean yaw at the end of the
-recorded rests. The policy acts greedily. Tag misses are drawn from the
-world model's probabilities with a generator seeded by `eval_seed`, so
-evaluating the same policy twice on the same device gives the same
-numbers.
-
-- `eval/reward`: the mean reward per frame, from −3 (all hanging) to +3.
-- `eval/upright`: the share of frames with every tag within 30° of upright.
-- `eval/mean_abs_action`: the mean |action|, in int8 units.
+`eval_every` iterations the checkpoint goes to
+`runs/policy/<name>/policy.pt` and the policy is evaluated: one rollout of
+`eval_steps` frames (10 s) from the pendulum hanging still, at each tag's
+mean yaw at the end of the recorded rests. The policy acts greedily. Tag
+misses are drawn from the world model's probabilities with a generator
+seeded by `eval_seed`, so evaluating the same policy twice on the same
+device gives the same numbers.
 
 At the end of training, the last evaluation's rollout becomes a video,
 `runs/policy/<name>/rollout.mp4`, logged to W&B as `rollout_from_hanging`.
@@ -116,3 +122,67 @@ The video draws three equal arms chained from the pivot, each at its tag's
 yaw, turned right side up, with an arm faded in frames where its tag was
 dropped as unseen, and the action below. Every frame is shown, played 4
 times slower than real time (`--slowdown`).
+
+### Metrics
+
+Rewards are per frame: the sum of the three arms' corrected cosines, from
+−3 (all hanging) to +3 (all upright). Values and returns are in the
+critic's units, discounted sums of rewards scaled by 1 − `gamma`, so they
+share that range: a policy that holds 0 per frame is worth about 0.
+
+Logged every iteration, from its `num_envs` episodes of `episode_steps`
+frames, started from random windows of the recordings, with actions
+sampled from the policy:
+
+- `train/reward`: the mean reward per frame over the episodes.
+- `train/reward_last_step`: the mean reward on their last frame, once the
+  policy has had the episode to act.
+- `train/upright`: the share of frames with every arm within 30° of
+  upright.
+- `train/value_mean`, `train/return_mean`: the mean of the critic's values
+  over the episodes, and of the return targets it is trained towards
+  (GAE's advantages plus the values).
+- `train/explained_variance`: 1 − Var(target − value) / Var(target), with
+  the values from before the update. 1 means the critic predicts its
+  targets, 0 no better than a constant. The targets lean on the critic's
+  own later values, so a critic can score well here while wrong about the
+  long run; `eval/value_error` checks that.
+
+Averaged over the minibatch updates of each iteration:
+
+- `train/pg_loss`: PPO's clipped policy loss.
+- `train/v_loss`: half the critic's squared error against the return
+  targets.
+- `train/entropy`: the entropy of the policy's action distribution, in
+  nats: ln 9 ≈ 2.20 when uniform over the 9 bins, 0 when certain.
+- `train/approx_kl`: an estimate of how far each update moved the policy
+  from the one that collected the episodes.
+- `train/clipfrac`: the share of samples whose probability ratio left
+  1 ± `clip`, where the loss stops rewarding the change.
+
+And, for the run itself:
+
+- `lr`: the learning rate, following the trapezoid over iterations.
+- `rollout_s`, `iteration_s`: seconds spent collecting the episodes, and
+  on the whole iteration including the update.
+
+Logged at each evaluation (see above):
+
+- `eval/reward`: the mean reward per frame over the rollout.
+- `eval/upright`: the share of its frames with every arm within 30° of
+  upright.
+- `eval/mean_abs_action`: the mean |action|, in int8 units (64 means always
+  at a limit).
+- `eval/value_hanging`: the critic's value of the hanging start.
+- `eval/value_error`, `eval/value_bias`: the mean absolute and mean signed
+  difference between the critic's value along the rollout and the
+  discounted return the rollout actually earned from there. Only frames
+  with enough of the rollout ahead to measure that return count (the
+  discount falls to 1%): the first 2.6 s of 10 at `gamma` 0.995. The
+  rollout is greedy while the critic values the sampling policy, so some
+  bias is expected.
+- `eval/value_vs_return`: the two plotted against time from hanging.
+
+At the end of training:
+
+- `rollout_from_hanging`: the video of the last evaluation's rollout.
