@@ -16,12 +16,14 @@
 //! The export also holds test cases, histories with the logits PyTorch
 //! gives for them, computed through the training data pipeline. Loading
 //! recomputes every case and refuses the policy if any differs.
+//!
+//! [`TrainedPolicy`] drives the motor with one, in `collect`.
 
-use crate::policy::Step;
+use crate::policy::{splitmix64, wait_until, DutyCycle, Policy, Step};
 use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const FORMAT: &str = "pendulum-policy-v1";
 const TAGS: usize = 3;
@@ -228,9 +230,29 @@ impl MlpPolicy {
                 best = i;
             }
         }
-        match self.levels.get(best) {
+        self.level(best)
+    }
+
+    /// An action for `history` drawn from the policy's distribution, by
+    /// inverting its CDF at `u`, uniform in [0, 1).
+    pub fn sample(&self, history: &[Step], u: f64) -> Result<i8> {
+        let logits = self.logits(&self.features(history)?);
+        let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let weights: Vec<f64> = logits.iter().map(|l| ((l - max) as f64).exp()).collect();
+        let mut left = u * weights.iter().sum::<f64>();
+        for (i, w) in weights.iter().enumerate() {
+            if left < *w {
+                return self.level(i);
+            }
+            left -= w;
+        }
+        self.level(weights.len() - 1)
+    }
+
+    fn level(&self, output: usize) -> Result<i8> {
+        match self.levels.get(output) {
             Some(&a) => Ok(a),
-            None => bail!("no action for output {best}"),
+            None => bail!("no action for output {output}"),
         }
     }
 
@@ -238,6 +260,67 @@ impl MlpPolicy {
         format!(
             "MLP policy over {} frames, actions {:?}, from {}",
             self.window, self.levels, self.source
+        )
+    }
+}
+
+/// A trained policy driving the motor: the network's action for the newest
+/// frame, sent `latency` after the policy was called, as the random walk's
+/// were in the recordings the world model learned from, so that the policy
+/// meets the delay it was trained with. The network itself takes tens of
+/// microseconds.
+///
+/// Like the random walk, it rests at 0 during the duty cycle's rest periods,
+/// which leave the pendulum hanging for the next swing-up. It takes the
+/// likeliest action, or with `sample_seed` draws one from the policy's
+/// distribution, from a hash of the seed and the frame number, so a run
+/// can be repeated from its seed.
+pub struct TrainedPolicy {
+    pub net: MlpPolicy,
+    pub latency: Duration,
+    pub duty: DutyCycle,
+    pub sample_seed: Option<u64>,
+}
+
+impl TrainedPolicy {
+    fn decide(&self, history: &[Step]) -> Result<i8> {
+        let now = &history[0];
+        if self.duty.resting(now.t) {
+            return Ok(0);
+        }
+        match self.sample_seed {
+            None => self.net.greedy(history),
+            Some(seed) => {
+                let bits = splitmix64(seed ^ splitmix64(now.frame)) >> 11;
+                self.net.sample(history, bits as f64 / (1u64 << 53) as f64)
+            }
+        }
+    }
+}
+
+impl Policy for TrainedPolicy {
+    fn history_length(&self) -> usize {
+        self.net.history_length()
+    }
+
+    fn act(&mut self, history: &[Step]) -> i8 {
+        let deadline = Instant::now() + self.latency;
+        // collect always hands over `history_length` frames, newest first,
+        // which reach back far enough; anything else is a bug there.
+        let action = self.decide(history).expect("a history the policy can read");
+        wait_until(deadline);
+        action
+    }
+
+    fn describe(&self) -> String {
+        let how = match self.sample_seed {
+            None => "likeliest action".to_string(),
+            Some(_) => "actions sampled from a hash of seed and frame".to_string(),
+        };
+        format!(
+            "{}; {how}; zero while resting; sent {} ms after the call",
+            self.net.describe(),
+            self.latency.as_secs_f64() * 1e3
         )
     }
 }
@@ -303,6 +386,63 @@ mod tests {
         assert_eq!(frame(2)[9], -64.0 / 128.0, "carried through the drop");
         assert!((frame(3)[0] - 1.0).abs() < 1e-6, "sin 90° is 1");
         assert_eq!(frame(3)[9], 32.0 / 128.0);
+    }
+
+    fn trained(sample_seed: Option<u64>, latency: Duration) -> TrainedPolicy {
+        TrainedPolicy {
+            net: MlpPolicy::from_json(FIXTURE).unwrap(),
+            latency,
+            duty: DutyCycle {
+                active: Duration::from_secs(1),
+                rest: Duration::from_secs(1),
+            },
+            sample_seed,
+        }
+    }
+
+    fn history_at(t: Duration, newest: u64) -> Vec<Step> {
+        (0..5)
+            .map(|i| Step {
+                t,
+                ..step(newest - i, Some(30.0 * i as f32), (i > 0).then_some(16))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_trained_policy_acts_greedily_rests_and_takes_its_latency() {
+        let mut p = trained(None, Duration::from_millis(5));
+        let history = history_at(Duration::from_millis(500), 100);
+        let started = Instant::now();
+        let a = p.act(&history);
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(5) && took < Duration::from_millis(6),
+            "{took:?}"
+        );
+        assert_eq!(a, p.net.greedy(&history).unwrap());
+        let resting = history_at(Duration::from_millis(1500), 100);
+        assert_eq!(p.act(&resting), 0);
+    }
+
+    #[test]
+    fn sampled_actions_follow_the_seed_and_the_policy() {
+        let p = trained(Some(7), Duration::ZERO);
+        let q = trained(Some(7), Duration::ZERO);
+        let actions: Vec<i8> = (100..400)
+            .map(|f| p.decide(&history_at(Duration::ZERO, f)).unwrap())
+            .collect();
+        let again: Vec<i8> = (100..400)
+            .map(|f| q.decide(&history_at(Duration::ZERO, f)).unwrap())
+            .collect();
+        assert_eq!(actions, again, "the same seed and frames give the same actions");
+        let distinct: std::collections::HashSet<_> = actions.iter().collect();
+        assert!(distinct.len() > 1, "sampling never varied: {distinct:?}");
+        // Inverting the CDF at the ends picks the first and last actions
+        // the policy gives weight to.
+        let h = history_at(Duration::ZERO, 100);
+        assert!(p.net.levels.contains(&p.net.sample(&h, 0.0).unwrap()));
+        assert!(p.net.levels.contains(&p.net.sample(&h, 0.999_999).unwrap()));
     }
 
     #[test]

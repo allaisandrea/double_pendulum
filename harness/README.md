@@ -200,12 +200,14 @@ firmware's watchdog zeroes it, 300 ms after the last byte. When `collect`
 stops, the policy thread sends a final zero.
 
 **The policy** is anything implementing `Policy` in `src/policy.rs`. It gets
-exactly `HISTORY_LENGTH` (3) frames, newest first: the current frame and the
-ones before it, each with its number, capture time since t0, the poses of
-tags 0, 1 and 2 (none when unseen), and the action in effect after it (none
-for the current frame). It returns one action. It is first called once a
-recording has that many frames; the earlier ones only fill its history, and
-the motor stays at 0. The length is recorded as `history` in the metadata.
+exactly as many frames as its `history_length` asks, newest first: the
+current frame and the ones before it, each with its number, capture time
+since t0, the poses of tags 0, 1 and 2 (none when unseen), and the action in
+effect after it (none for the current frame). It returns one action. It is
+first called once a recording has that many frames; the earlier ones only
+fill its history, and the motor stays at 0. The length is recorded as
+`history` in the metadata: 2 for the stand-in, `policy_window` + 1 (17) for
+a trained policy.
 
 **The stand-in policy** is a random walk: each frame the action moves by a
 step drawn uniformly from ±`--policy-step` (40), reflecting at
@@ -220,6 +222,23 @@ for `--rest-s` (5) sending zeros, and repeats, so one recording holds both
 driven motion and the arm settling. The cycle runs on capture time since
 t0. At zero duty the shield brakes the motor: the arm settles damped, not
 free. The firmware caps duty at ±80.
+
+**A trained policy** replaces the stand-in with `--policy`, naming a JSON
+export from `learning` (see [Trained policies](#trained-policies)):
+
+```sh
+./target/debug/collect --policy ../learning/runs/policy/<name>/policy.json --duration 60
+./target/debug/collect --policy ../learning/runs/policy/<name>/policy.json --policy-sample
+```
+
+It takes the likeliest action, or with `--policy-sample` draws one from the
+policy's distribution, from a hash of `--seed` and the frame number, for
+varied training data. Its forward pass takes tens of microseconds, but its
+action is sent `--policy-latency-ms` (7) after the call, as the stand-in's
+were: the world model learned the rig's delay from those recordings, so the
+policy was trained with it. It keeps the same rest cycle, which leaves the
+pendulum hanging for each swing-up. The metadata records `policy_file` and
+`policy_sample` in place of `policy_range` and `policy_step`.
 
 **Output**: `recordings/<unix time>/frames.arrows`, an Arrow IPC stream,
 one row per frame that went through detection. A stream is readable up to
@@ -272,8 +291,8 @@ two hidden layers of 256.
 The input covers the latest `policy_window` frames by camera frame number:
 a frame the camera dropped counts as one with no tag seen, the action
 carried through it, as in the recordings `learning` trains on. It needs
-`policy_window + 1` frames of history, more than `collect` keeps
-(`HISTORY_LENGTH`), so the policy is not yet wired into `collect`.
+`policy_window + 1` frames of history, which `collect` keeps for it; see
+[collect](#collect-rl-training-data) for running one.
 
 `src/testdata/mlp_policy.json` is a small random policy for the tests,
 from `uv run python -m imagination.export --fixture

@@ -12,7 +12,8 @@
 //! effect. Nothing waits on a clock: an action goes out as soon as it is
 //! ready, and its send time is recorded.
 //!
-//! For now the policy is a stand-in, a random walk; see `policy.rs`.
+//! The policy is a stand-in random walk (`policy.rs`), or with --policy one
+//! trained in `learning` (`mlp_policy.rs`).
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
@@ -20,7 +21,8 @@ use harness::camera::{self, capture_loop, pick_camera, Frame};
 use harness::clock::{self, mono};
 use harness::constants::{HFOV_DEG, TAG_FAMILY, TAG_SIZE_M};
 use harness::latest::{Latest, Take};
-use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step, HISTORY_LENGTH};
+use harness::mlp_policy::{MlpPolicy, TrainedPolicy};
+use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step};
 use harness::table::{self, FrameRow, Table, TagRow};
 use harness::tag_detector::{Intrinsics, TagDetector};
 use harness::{serial, uvc};
@@ -44,6 +46,16 @@ struct Args {
     #[arg(long)]
     duration: Option<f64>,
 
+    /// A policy exported by `learning`'s `imagination.export` (its JSON), to
+    /// drive the motor instead of the stand-in random walk
+    #[arg(long)]
+    policy: Option<PathBuf>,
+
+    /// With --policy: draw each action from the policy's distribution
+    /// rather than taking the likeliest, for varied training data
+    #[arg(long)]
+    policy_sample: bool,
+
     /// Stand-in policy: the action walks within -range..=range. 0 sends only
     /// zeros, so nothing moves
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u8).range(0..=127))]
@@ -55,14 +67,16 @@ struct Args {
     #[arg(long, default_value_t = 40, value_parser = clap::value_parser!(u8).range(0..=127))]
     policy_step: u8,
 
-    /// Stand-in policy: simulated inference time per action, in
-    /// milliseconds; the camera delivers a frame every 8.3 ms
+    /// Time from calling the policy to sending its action, in milliseconds.
+    /// The stand-in spends it as simulated inference; a trained policy is
+    /// padded to it, to meet the delay of the recordings its world model
+    /// learned from. The camera delivers a frame every 8 ms
     #[arg(long, default_value_t = 7.0)]
     policy_latency_ms: f64,
 
-    /// The stand-in policy is on for this long, then rests (all zeros) for
-    /// --rest-s, and repeats, so one recording holds both driven motion and
-    /// the arm settling afterwards. Seconds of capture time from t0
+    /// The policy is on for this long, then rests (all zeros) for --rest-s,
+    /// and repeats, so one recording holds both driven motion and the arm
+    /// settling afterwards. Seconds of capture time from t0
     #[arg(long, default_value_t = 20.0)]
     active_s: f64,
 
@@ -71,7 +85,8 @@ struct Args {
     #[arg(long, default_value_t = 5.0)]
     rest_s: f64,
 
-    /// Seed for the stand-in policy [default: random, printed and recorded]
+    /// Seed for the stand-in policy, or a trained one's sampled actions
+    /// [default: random, printed and recorded]
     #[arg(long)]
     seed: Option<u64>,
 
@@ -120,8 +135,13 @@ struct Detected {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let policy = make_policy(&args)?;
-    let (seed, duty) = (policy.seed, policy.duty);
+    let Made {
+        policy,
+        seed,
+        duty,
+        latency,
+        meta: policy_meta,
+    } = make_policy(&args)?;
     let out = output_dir(args.out.clone())?;
     let stop = stop_on_ctrl_c()?;
 
@@ -175,11 +195,9 @@ fn main() -> Result<()> {
         ("exposure_us", args.exposure_us.to_string()),
         ("gain", args.gain.to_string()),
         ("decimate", args.decimate.to_string()),
-        ("history", HISTORY_LENGTH.to_string()),
+        ("history", policy.history_length().to_string()),
         ("policy", policy.describe()),
-        ("policy_range", args.policy_range.to_string()),
-        ("policy_step", args.policy_step.to_string()),
-        ("policy_latency_ns", policy.latency.as_nanos().to_string()),
+        ("policy_latency_ns", latency.as_nanos().to_string()),
         ("active_ns", duty.active.as_nanos().to_string()),
         ("rest_ns", duty.rest.as_nanos().to_string()),
         ("seed", seed.to_string()),
@@ -187,14 +205,16 @@ fn main() -> Result<()> {
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
+    .chain(policy_meta)
     .collect();
 
     let frames = Table::create(&out.join("frames.arrows"), meta)?;
     let (row_tx, row_rx) = mpsc::channel::<FrameRow>();
     let status_every = Duration::from_secs_f64(args.status_every_s.max(0.0));
+    let warmup = policy.history_length() as u64 - 1;
     let logger = thread::Builder::new()
         .name("logger".into())
-        .spawn(move || log_loop(row_rx, frames, duty, status_every))?;
+        .spawn(move || log_loop(row_rx, frames, duty, status_every, warmup))?;
 
     let reset = Arc::new(AtomicBool::new(false));
     let heard = Arc::new(Mutex::new(Vec::new()));
@@ -214,23 +234,21 @@ fn main() -> Result<()> {
             .spawn(move || detect_loop(&args, k, &slot, det_tx, &stop))?
     };
 
-    let act = {
-        let stop = stop.clone();
-        thread::Builder::new()
-            .name("policy".into())
-            .spawn(move || policy_loop(Box::new(policy), det_rx, port, t0, row_tx, &stop))?
-    };
-
     let cycle = if duty.rest.is_zero() {
         "always on".to_string()
     } else {
         format!("{} s on, {} s rest", args.active_s, args.rest_s)
     };
+    eprintln!("policy: {}", policy.describe());
+    let act = {
+        let stop = stop.clone();
+        thread::Builder::new()
+            .name("policy".into())
+            .spawn(move || policy_loop(policy, det_rx, port, t0, row_tx, &stop))?
+    };
     eprintln!(
-        "recording to {} (seed {seed}, policy ±{} step {}, {cycle}); Ctrl-C to stop",
-        out.display(),
-        args.policy_range,
-        args.policy_step
+        "recording to {} (seed {seed}, {cycle}); Ctrl-C to stop",
+        out.display()
     );
     let started = Instant::now();
     let asleep_at_start = clock::asleep();
@@ -298,22 +316,67 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// The stand-in policy the arguments describe, with its seed chosen if none
-/// was given.
-fn make_policy(args: &Args) -> Result<RandomWalkPolicy> {
+/// The policy the arguments describe, and what the recording's metadata
+/// says of it.
+struct Made {
+    policy: Box<dyn Policy>,
+    seed: u64,
+    duty: DutyCycle,
+    latency: Duration,
+    /// Metadata particular to the kind of policy.
+    meta: Vec<(String, String)>,
+}
+
+/// The trained policy --policy names, or else the stand-in random walk, with
+/// the seed chosen if none was given.
+fn make_policy(args: &Args) -> Result<Made> {
     anyhow::ensure!(
         args.active_s > 0.0 && args.rest_s >= 0.0 && args.policy_latency_ms >= 0.0,
         "--active-s must be positive; --rest-s and --policy-latency-ms not negative"
     );
-    Ok(RandomWalkPolicy {
-        seed: args.seed.unwrap_or_else(rand::random),
-        range: args.policy_range as i8,
-        step: args.policy_step,
-        latency: Duration::from_secs_f64(args.policy_latency_ms / 1e3),
-        duty: DutyCycle {
-            active: Duration::from_secs_f64(args.active_s),
-            rest: Duration::from_secs_f64(args.rest_s),
-        },
+    anyhow::ensure!(
+        args.policy.is_some() || !args.policy_sample,
+        "--policy-sample needs --policy"
+    );
+    let seed = args.seed.unwrap_or_else(rand::random);
+    let latency = Duration::from_secs_f64(args.policy_latency_ms / 1e3);
+    let duty = DutyCycle {
+        active: Duration::from_secs_f64(args.active_s),
+        rest: Duration::from_secs_f64(args.rest_s),
+    };
+    let (policy, meta): (Box<dyn Policy>, _) = match &args.policy {
+        Some(path) => (
+            Box::new(TrainedPolicy {
+                net: MlpPolicy::load(path)?,
+                latency,
+                duty,
+                sample_seed: args.policy_sample.then_some(seed),
+            }),
+            vec![
+                ("policy_file".to_string(), path.display().to_string()),
+                ("policy_sample".to_string(), args.policy_sample.to_string()),
+            ],
+        ),
+        None => (
+            Box::new(RandomWalkPolicy {
+                seed,
+                range: args.policy_range as i8,
+                step: args.policy_step,
+                latency,
+                duty,
+            }),
+            vec![
+                ("policy_range".to_string(), args.policy_range.to_string()),
+                ("policy_step".to_string(), args.policy_step.to_string()),
+            ],
+        ),
+    };
+    Ok(Made {
+        policy,
+        seed,
+        duty,
+        latency,
+        meta,
     })
 }
 
@@ -480,9 +543,10 @@ fn policy_loop(
     };
     // The frames before the newest, oldest first, each with the action in
     // effect after it.
-    let mut history: VecDeque<Step> = VecDeque::with_capacity(HISTORY_LENGTH);
+    let length = policy.history_length();
+    let mut history: VecDeque<Step> = VecDeque::with_capacity(length);
     let remember = |history: &mut VecDeque<Step>, s: Step| {
-        if history.len() == HISTORY_LENGTH - 1 {
+        if history.len() == length - 1 {
             history.pop_front();
         }
         history.push_back(s);
@@ -504,7 +568,7 @@ fn policy_loop(
                 let _ = rows.send(row(d, current, None));
             }
 
-            if history.len() < HISTORY_LENGTH - 1 {
+            if history.len() < length - 1 {
                 // The start of the recording: this frame only fills the
                 // history, and the startup 0 stays in effect.
                 remember(&mut history, step(&newest, Some(current)));
@@ -514,10 +578,12 @@ fn policy_loop(
 
             let t_policy_start = mono();
             // Newest first: this frame, then the history from its end.
-            let input: [Step; HISTORY_LENGTH] = std::array::from_fn(|i| match i {
-                0 => step(&newest, None),
-                _ => history[history.len() - i].clone(),
-            });
+            let input: Vec<Step> = (0..length)
+                .map(|i| match i {
+                    0 => step(&newest, None),
+                    _ => history[history.len() - i].clone(),
+                })
+                .collect();
             let action = policy.act(&input);
             let t_policy_done = mono();
             serial::send(port.as_mut(), action)?;
@@ -552,15 +618,18 @@ fn raise_priority() {
 /// Writes the frames table, a batch about once a second, until the policy
 /// thread hangs up. Also keeps the run's statistics, from the same rows it
 /// writes: a status line every `status_every` (zero prints none), and the
-/// totals, returned at the end.
+/// totals, returned at the end. The first `warmup` rows only fill the
+/// policy's history.
 fn log_loop(
     rx: Receiver<FrameRow>,
     mut frames: Table,
     duty: DutyCycle,
     status_every: Duration,
+    warmup: u64,
 ) -> Result<Stats> {
     let started = Instant::now();
     let (mut total, mut interval) = (Stats::default(), Stats::default());
+    total.warmup = warmup;
     let mut next_flush = started + Duration::from_secs(1);
     let mut next_status = started + status_every;
     loop {
@@ -572,7 +641,7 @@ fn log_loop(
             Ok(r) => {
                 // The first rows only fill the policy's history; after them,
                 // a row not acted on was skipped while the policy was busy.
-                let startup = total.frames < HISTORY_LENGTH as u64 - 1;
+                let startup = total.frames < warmup;
                 total.add(&r, startup);
                 interval.add(&r, startup);
                 frames.push(r);
@@ -599,6 +668,8 @@ fn log_loop(
 #[derive(Default)]
 struct Stats {
     frames: u64,
+    /// Frames at the start that only fill the policy's history.
+    warmup: u64,
     /// Frames tags 0, 1 and 2 were each seen in.
     with_tag: [u64; 3],
     acted: u64,
@@ -683,7 +754,7 @@ impl Stats {
         eprintln!(
             "policy: acted on {} frames after the first {}, skipped {} ({:.1}%) while busy",
             self.acted,
-            HISTORY_LENGTH - 1,
+            self.warmup,
             self.skipped,
             100.0 * self.skipped as f64 / (self.acted + self.skipped).max(1) as f64
         );
