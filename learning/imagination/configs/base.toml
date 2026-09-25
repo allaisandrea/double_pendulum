@@ -42,4 +42,7 @@ eval_every = 25
 eval_steps = 1250
 eval_seed = 0
 
+# Every checkpoint_every iterations, the whole training state is saved.
+checkpoint_every = 50
+
 wandb_project = "double-pendulum-imagination"

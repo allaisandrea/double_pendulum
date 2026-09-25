@@ -1,22 +1,32 @@
 """Trains a policy with PPO in the world model, logging to Weights & Biases.
 
     uv run python -m imagination.train imagination/configs/base.toml --name first
-    uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 3
+    uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
+    uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_000100.pt
 
 Each iteration starts `num_envs` environments from real windows of the
 recordings, runs them for `episode_steps` frames with actions sampled from
 the policy, and updates the policy on that batch. Rewards are scaled by
 1 - gamma for the critic, which puts returns in about [-3, 3].
 
-Every `eval_every` iterations, the run's checkpoint is saved to
-`runs/policy/<name>/policy.pt`, and the policy is evaluated: one rollout of
+Every `eval_every` iterations the policy is evaluated: one rollout of
 `eval_steps` frames from the pendulum hanging still, acting greedily. Its
 tag misses are drawn from a generator seeded with `eval_seed`, so
 evaluations are repeatable. At the end, a video of the last evaluation's
 rollout goes to `runs/policy/<name>/rollout.mp4` and to W&B.
+
+Every `checkpoint_every` iterations, and at the end, the whole training
+state goes to `runs/policy/<name>/checkpoints/iter_NNNNNN.pt`, and a copy
+to `runs/policy/<name>/policy.pt`. --resume continues from one, with the
+config it saved, in the same directory and W&B run; iterations W&B already
+has past the checkpoint are not logged again.
+
+Each phase of an iteration is timed, with the device synchronised so that
+the times are real: `time/<phase>_s` per iteration, and `time/share/<phase>`
+of all the time timed so far.
 """
 import argparse
-import time
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -24,13 +34,14 @@ import torch
 import wandb
 
 from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
-from common.run_lib import git_commit, pick_device
+from common.run_lib import Timer, git_commit, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid_scheduler
 from imagination.agent_lib import Agent
 from imagination.env_lib import ImaginedEnv, action_levels, upright
 from imagination.ppo_lib import discounted_returns, gae, ppo_loss
 from imagination.rollout_lib import Rollout, from_hanging, write_rollout_video
 from world_model.model_lib import load_world_model
+
 
 def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
     """The evaluation's metrics, and its rollout.
@@ -67,22 +78,38 @@ def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
     return metrics, run
 
 
-def main():
+def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("config", type=Path)
-    parser.add_argument("--name", required=True, help="the run's name, here and in W&B")
+    parser.add_argument("config", type=Path, nargs="?", help="for a new run")
+    parser.add_argument("--name", help="the new run's name, here and in W&B")
+    parser.add_argument("--resume", type=Path, help="a checkpoint to continue from")
     parser.add_argument("--wandb", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--iterations", type=int, help="override the config's iterations")
-    args = parser.parse_args()
-    out = Path("runs/policy") / args.name
-    if out.exists():
-        raise SystemExit(f"{out} exists: pick another --name")
+    parser.add_argument("--iterations", type=int, help="override a new run's iterations")
+    args = parser.parse_args(argv)
+    if args.resume:
+        if args.config or args.name or args.iterations:
+            parser.error("--resume takes the config, name and iterations from the checkpoint")
+    elif not (args.config and args.name):
+        parser.error("a new run needs a config and --name")
+    return args
 
-    with open(args.config, "rb") as f:
-        cfg = tomllib.load(f)
-    if args.iterations is not None:
-        cfg["iterations"] = args.iterations
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.resume:
+        ck = torch.load(args.resume, map_location="cpu", weights_only=False)
+        cfg, out = ck["config"], args.resume.parent.parent
+        name = out.name
+    else:
+        ck, name = None, args.name
+        out = Path("runs/policy") / name
+        if out.exists():
+            raise SystemExit(f"{out} exists: pick another --name")
+        with open(args.config, "rb") as f:
+            cfg = tomllib.load(f)
+        if args.iterations is not None:
+            cfg["iterations"] = args.iterations
     device = pick_device(args.device)
     torch.manual_seed(cfg["seed"])
     generator = torch.Generator().manual_seed(cfg["seed"])
@@ -99,10 +126,22 @@ def main():
     sched = trapezoid_scheduler(
         opt, cfg["iterations"], cfg["warmup_iterations"], cfg["cooldown_fraction"]
     )
+    first = 1
+    timer = Timer(device)
+    if ck:
+        agent.load_state_dict(ck["agent"])
+        opt.load_state_dict(ck["optimizer"])
+        sched.load_state_dict(ck["scheduler"])
+        generator.set_state(ck["rng"]["generator"])
+        set_rng_state(ck["rng"]["torch"], device)
+        timer = Timer(device, ck["time"])
+        first = ck["iteration"] + 1
+        if first > cfg["iterations"]:
+            raise SystemExit(f"{args.resume} is from the last iteration: nothing to resume")
 
     run = wandb.init(
         project=cfg["wandb_project"],
-        name=args.name,
+        name=name,
         config={
             **cfg,
             "commit": git_commit(),
@@ -111,11 +150,13 @@ def main():
             "parameters": sum(p.numel() for p in agent.parameters()),
         },
         mode=args.wandb,
+        **({"id": ck["wandb_id"], "resume": "allow"} if ck else {}),
     )
-    out.mkdir(parents=True)
+    (out / "checkpoints").mkdir(parents=True, exist_ok=bool(ck))
     hanging_deg = torch.rad2deg(torch.atan2(hanging[:, 0], hanging[:, 1])).tolist()
     print(
-        f"{args.name}: actions {levels.tolist()}, {len(starts)} start windows on {device},"
+        f"{name}: {'resuming at iteration ' + str(first) + ', ' if ck else ''}"
+        f"actions {levels.tolist()}, {len(starts)} start windows on {device},"
         f" hanging yaws {', '.join(f'{d:.1f}°' for d in hanging_deg)}"
     )
 
@@ -129,7 +170,8 @@ def main():
     reward_buf = torch.zeros(T, N, device=device)
     up_buf = torch.zeros(T, N, device=device)
 
-    def save():
+    def save(it):
+        path = out / "checkpoints" / f"iter_{it:06d}.pt"
         torch.save(
             {
                 "config": cfg,
@@ -137,14 +179,20 @@ def main():
                 "hanging": env.hanging.cpu(),
                 "features": env.features,
                 "agent": agent.state_dict(),
+                "optimizer": opt.state_dict(),
+                "scheduler": sched.state_dict(),
+                "iteration": it,
+                "rng": {"generator": generator.get_state(), "torch": rng_state(device)},
+                "time": timer.totals,
+                "wandb_id": run.id,
             },
-            out / "policy.pt",
+            path,
         )
+        shutil.copyfile(path, out / "policy.pt")
 
-    for it in range(1, cfg["iterations"] + 1):
-        started = time.perf_counter()
-        env.reset(starts, starts.sample(N, generator))
-        with torch.no_grad():
+    for it in range(first, cfg["iterations"] + 1):
+        with timer("rollout"), torch.no_grad():
+            env.reset(starts, starts.sample(N, generator))
             for t in range(T):
                 x = env.observe()
                 dist = agent.policy(x)
@@ -154,24 +202,25 @@ def main():
                 reward_buf[t] = env.step(bins)
                 up_buf[t] = upright(correct_yaws(env.prediction, env.hanging)).float()
             last_value = agent.value(env.observe())
+        with timer("advantages"), torch.no_grad():
             advantages, returns = gae(
                 reward_buf * (1 - gamma), value_buf, last_value, gamma, cfg["gae_lambda"]
             )
-        rollout_s = time.perf_counter() - started
 
-        flat = [b.flatten(0, 1) for b in (x_buf, bin_buf, logp_buf, advantages, returns)]
-        stats = []
-        for _ in range(cfg["update_epochs"]):
-            order = torch.randperm(batch, device=device)
-            for i in range(0, batch, minibatch):
-                mb = order[i : i + minibatch]
-                loss, s = ppo_loss(agent, *(b[mb] for b in flat), cfg)
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(agent.parameters(), cfg["max_grad_norm"])
-                opt.step()
-                stats.append(s)
-        sched.step()
+        with timer("update"):
+            flat = [b.flatten(0, 1) for b in (x_buf, bin_buf, logp_buf, advantages, returns)]
+            stats = []
+            for _ in range(cfg["update_epochs"]):
+                order = torch.randperm(batch, device=device)
+                for i in range(0, batch, minibatch):
+                    mb = order[i : i + minibatch]
+                    loss, s = ppo_loss(agent, *(b[mb] for b in flat), cfg)
+                    opt.zero_grad(set_to_none=True)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(agent.parameters(), cfg["max_grad_norm"])
+                    opt.step()
+                    stats.append(s)
+            sched.step()
 
         values, rets = value_buf.flatten(), returns.flatten()
         metrics = {k: torch.stack([s[k] for s in stats]).mean().item() for k in stats[0]}
@@ -184,19 +233,24 @@ def main():
             "train/value_mean": values.mean().item(),
             "train/return_mean": rets.mean().item(),
             "lr": sched.get_last_lr()[0],
-            "rollout_s": rollout_s,
-            "iteration_s": time.perf_counter() - started,
         }
-        if it % cfg["eval_every"] == 0 or it == cfg["iterations"]:
-            eval_metrics, eval_run = evaluate(agent, env, cfg)
+        evaluated = it % cfg["eval_every"] == 0 or it == cfg["iterations"]
+        if evaluated:
+            with timer("eval"):
+                eval_metrics, eval_run = evaluate(agent, env, cfg)
             metrics |= eval_metrics
-            save()
+        if it % cfg["checkpoint_every"] == 0 or it == cfg["iterations"]:
+            with timer("checkpoint"):
+                save(it)
+        metrics |= timer.metrics()
+        if evaluated:
             print(
                 f"iteration {it}: reward {metrics['train/reward']:.3f},"
                 f" eval {metrics['eval/reward']:.3f}"
                 f" (upright {metrics['eval/upright']:.1%},"
                 f" value error {metrics.get('eval/value_error', float('nan')):.3f}),"
-                f" entropy {metrics['train/entropy']:.3f}, {metrics['iteration_s']:.1f} s",
+                f" entropy {metrics['train/entropy']:.3f},"
+                f" eval {metrics['time/share/eval']:.0%} of the time so far",
                 flush=True,
             )
         wandb.log(metrics, step=it)

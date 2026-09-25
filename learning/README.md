@@ -98,7 +98,18 @@ world model steps.
 ```sh
 uv run python -m imagination.train imagination/configs/base.toml --name first
 uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
+uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_000100.pt
 ```
+
+Every `checkpoint_every` iterations, and at the end, the whole training
+state (policy and critic, optimizer, schedule, iteration, random
+generators, times and W&B run id) goes to
+`runs/policy/<name>/checkpoints/iter_NNNNNN.pt`, and a copy to
+`runs/policy/<name>/policy.pt`. `--resume` continues from a checkpoint
+with the config it saved, in the same directory and W&B run, and
+repeats what an uninterrupted run would have done. W&B does not take a
+step twice, so iterations it already logged past the checkpoint are not
+logged again.
 
 `world_model` in the config names the checkpoint to use. Every
 `eval_every` iterations the checkpoint goes to
@@ -163,8 +174,25 @@ Averaged over the minibatch updates of each iteration:
 And, for the run itself:
 
 - `lr`: the learning rate, following the trapezoid over iterations.
-- `rollout_s`, `iteration_s`: seconds spent collecting the episodes, and
-  on the whole iteration including the update.
+- `time/<phase>_s`: seconds spent this iteration in each phase. The
+  device is synchronised at each phase's start and end, so the times are
+  the work done, not merely queued.
+  - `time/rollout_s`: collecting the episodes: resetting the
+    environments, and per frame the policy's and critic's forward passes
+    and the world model's step.
+  - `time/advantages_s`: GAE over the episodes.
+  - `time/update_s`: PPO's `update_epochs` passes over the batch in
+    `minibatches` minibatches, and the schedule's step.
+  - `time/eval_s`: the evaluation rollout and its metrics, on iterations
+    that evaluate.
+  - `time/checkpoint_s`: writing the checkpoint and `policy.pt`, on
+    iterations that save one.
+- `time/iteration_s`: the sum of this iteration's phases. It leaves out
+  computing and logging the training metrics, which is small.
+- `time/share/<phase>`: each phase's share of all the time timed since
+  the run began, carried across resumes; `time/share/eval` answers what
+  the evaluation costs relative to training.
+- `time/total_s`: that time, in seconds.
 
 Logged at each evaluation (see above):
 
