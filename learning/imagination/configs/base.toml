@@ -39,5 +39,7 @@ seed = 0
 eval_every = 25
 eval_envs = 1024
 eval_steps = 250
+# Length of the video from rest made at the end.
+video_seconds = 10
 
 wandb_project = "double-pendulum-imagination"

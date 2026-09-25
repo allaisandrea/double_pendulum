@@ -123,3 +123,25 @@ class Windows:
     def gather(self, index: torch.Tensor) -> Batch:
         rows = self.starts[index][:, None] + self._steps
         return Batch(self.obs[rows], self.present[rows], self.action[rows])
+
+
+def rest_window(recordings: list[Recording], length: int, min_rest: int = 500, device="cpu") -> Batch:
+    """The `length` steps ending at the last frame with every tag seen in
+    the first rest in `recordings` of at least `min_rest` frames at action
+    0 (4 s at 125 fps): the pendulum hanging still, as a batch of one."""
+    for r in recordings:
+        edges = np.flatnonzero(np.diff(np.r_[0, (r.action == 0).astype(int), 0]))
+        all_seen = r.present.all(axis=1)
+        for start, end in zip(edges[::2], edges[1::2]):
+            seen = np.flatnonzero(all_seen[start:end])
+            if len(seen) == 0:
+                continue
+            end = start + seen[-1] + 1
+            if end - start >= max(min_rest, length):
+                s = slice(end - length, end)
+                return Batch(
+                    torch.from_numpy(r.obs[s][None]).to(device),
+                    torch.from_numpy(r.present[s][None]).to(device),
+                    torch.from_numpy(r.action[s][None]).to(device),
+                )
+    raise ValueError(f"no rest of {min_rest} frames in the recordings")

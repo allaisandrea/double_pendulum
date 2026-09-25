@@ -5,7 +5,8 @@ directory.
 
 - `common/`: code the other packages share. `data_lib.py` loads the frames
   tables `collect` writes (schema in `harness/src/table.rs`) as steps;
-  `testing_lib.py` builds small ones for tests.
+  `render_lib.py` draws the pendulum from its yaws into videos, for real or
+  imagined runs; `testing_lib.py` builds small tables for tests.
 - `world_model/`: an auto-regressive world model of the pendulum. Given a
   window of steps, it predicts the next frame's observation.
 - `imagination/`: trains a policy with PPO, using the world model as the
@@ -92,3 +93,18 @@ starts for `eval_steps` frames: `eval/reward` is the mean reward per frame,
 `eval/upright` the share of frames with every tag within 30° of upright,
 each also over the second half of the rollout. The checkpoint goes to
 `runs/<name>/policy.pt`.
+
+At the end of training, the policy acts greedily from the pendulum at rest
+(the end of the first long rest in the recordings) for `video_seconds`.
+The video goes to `runs/<name>/rollout.mp4` and to W&B as
+`rollout_from_rest`. To make one from any checkpoint:
+
+```sh
+uv run python -m imagination.video runs/ppo-base/policy.pt
+uv run python -m imagination.video runs/ppo-base/policy.pt --seconds 20 --sample --world-model runs/base/model.pt --out spin.mp4
+```
+
+The video draws three equal arms chained from the pivot, each at its tag's
+yaw, turned right side up, with an arm faded in frames where its tag was
+dropped as unseen, and the action below. Every frame is shown, played 4
+times slower than real time (`--slowdown`).

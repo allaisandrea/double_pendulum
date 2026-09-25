@@ -16,7 +16,7 @@ down, so a hanging arm reads about 180° and scores -1, an upright one +1.
 import torch
 from torch.nn import functional as F
 
-from common.data_lib import ACTION_SCALE, Windows
+from common.data_lib import ACTION_SCALE, Batch, Windows
 from world_model.model_lib import STEP_FEATURES, WorldModel, step_features
 
 INT8_MIN, INT8_MAX = -128, 127
@@ -43,7 +43,8 @@ class ImaginedEnv:
         self.model = model
         self.policy_window = policy_window
         self.history = max(model.window, policy_window + 1)
-        self.actions = levels.to(model.delta_scale.device) / ACTION_SCALE
+        self.levels = levels.to(model.delta_scale.device)
+        self.actions = self.levels / ACTION_SCALE
         self.sample_missing = sample_missing
 
     @property
@@ -54,7 +55,11 @@ class ImaginedEnv:
     def reset(self, starts: Windows, index: torch.Tensor):
         """Starts one environment from each window at `index`, of `history` steps."""
         assert starts.length == self.history
-        batch = starts.gather(index)
+        self.reset_to(starts.gather(index))
+
+    def reset_to(self, batch: Batch):
+        """Starts one environment from each window of `history` steps in `batch`."""
+        assert batch.obs.shape[1] == self.history
         self.obs = batch.obs.clone()
         self.present = batch.present.clone()
         self.action = batch.action.clone()
