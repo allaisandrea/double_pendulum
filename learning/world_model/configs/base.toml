@@ -1,0 +1,26 @@
+# Recordings are directories under data_dir holding frames.arrows.
+data_dir = "data"
+train = ["1790282998", "1790279628"]
+val = ["1790281442"]
+
+# Steps of history the model sees. The action reaches the motor about
+# 27 ms (3-4 frames) after capture, so this needs to reach well past that.
+window = 16
+hidden = 256
+layers = 3
+
+batch_size = 1024
+lr = 1e-3
+weight_decay = 1e-4
+steps = 20000
+bce_weight = 0.1
+seed = 0
+
+log_every = 50
+eval_every = 1000
+# Windows in each fixed evaluation sample, and the rollout horizons, in
+# frames (8 ms each), whose 1 - R² is logged.
+eval_samples = 4096
+horizons = [1, 4, 16, 64, 125]
+
+wandb_project = "double-pendulum-world-model"
