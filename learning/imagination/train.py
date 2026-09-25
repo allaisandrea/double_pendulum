@@ -52,11 +52,10 @@ from world_model.model_lib import load_world_model
 def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
     """The evaluation's metrics, and its rollout.
 
-    `eval/reward` is the sum of the cosines, as it was before speed
-    limits, and `eval/speed_penalty` what the limits cost on top; the
-    policy maximises the difference. The critic is checked against the
-    rollout's actual discounted return, net of the penalty, in the
-    critic's units (rewards scaled by 1 - gamma), over the frames early
+    `eval/reward` is the reward the policy maximises: `eval/cos_sum`, the
+    sum of the arms' cosines, less `eval/speed_penalty`. Without speed
+    limits the two are the same. The critic is checked against the
+    rollout's actual discounted return, in the critic's units (rewards scaled by 1 - gamma), over the frames early
     enough for the rest of the rollout to measure it. The rollout is greedy
     while the critic values the sampling policy, so some bias is expected.
     """
@@ -65,7 +64,8 @@ def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
     actual = discounted_returns(run.reward[:, 0] * (1 - gamma), gamma)
     value = run.value[: len(actual), 0]
     metrics = {
-        "eval/reward": (run.reward + run.penalty).mean().item(),
+        "eval/reward": run.reward.mean().item(),
+        "eval/cos_sum": (run.reward + run.penalty).mean().item(),
         "eval/speed_penalty": run.penalty.mean().item(),
         # The first frame's speed is measured from the start, not a step.
         **{f"eval/speed/arm{i}": v.item() for i, v in enumerate(run.speed[1:, 0].median(0).values)},
@@ -270,7 +270,8 @@ def main(argv=None):
         metrics = {k: torch.stack([s[k] for s in stats]).mean().item() for k in stats[0]}
         metrics = {f"train/{k}": v for k, v in metrics.items()}
         metrics |= {
-            "train/reward": (reward_buf + penalty_buf).mean().item(),
+            "train/reward": reward_buf.mean().item(),
+            "train/cos_sum": (reward_buf + penalty_buf).mean().item(),
             "train/speed_penalty": penalty_buf.mean().item(),
             "train/resets": reset_buf.sum().item(),
             "train/upright": up_buf.mean().item(),
@@ -292,7 +293,7 @@ def main(argv=None):
             print(
                 f"iteration {it}: reward {metrics['train/reward']:.3f},"
                 f" eval {metrics['eval/reward']:.3f}"
-                f" (upright {metrics['eval/upright']:.1%},"
+                f" (cos sum {metrics['eval/cos_sum']:.3f}, upright {metrics['eval/upright']:.1%},"
                 f" value error {metrics.get('eval/value_error', float('nan')):.3f}),"
                 f" entropy {metrics['train/entropy']:.3f},"
                 f" eval {metrics['time/share/eval']:.0%} of the time so far",

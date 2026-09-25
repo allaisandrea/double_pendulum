@@ -164,15 +164,18 @@ README, "Trained policies".
 ### Metrics
 
 Rewards are per frame: the sum of the three arms' corrected cosines, from
-−3 (all hanging) to +3 (all upright). Values and returns are in the
+−3 (all hanging) to +3 (all upright), less any speed penalty. Values and returns are in the
 critic's units, discounted sums of rewards scaled by 1 − `gamma`, so they
 share that range: a policy that holds 0 per frame is worth about 0.
 
 Logged every iteration, from its `rollout_steps` frames in each of the
 `num_envs` environments, with actions sampled from the policy:
 
-- `train/reward`: the mean reward per frame over the iteration, the sum
-  of cosines before the speed penalty.
+- `train/reward`: the mean reward per frame over the iteration, the one
+  the policy maximises: `train/cos_sum` less `train/speed_penalty`.
+- `train/cos_sum`: the mean sum of the arms' cosines per frame, how high
+  the pendulum is, whatever else the reward counts. Without speed limits
+  it equals `train/reward`.
 - `train/speed_penalty`: the mean speed penalty per frame.
 - `train/resets`: how many environments started again from a recorded
   window during the iteration.
@@ -224,8 +227,10 @@ And, for the run itself:
 
 Logged at each evaluation (see above):
 
-- `eval/reward`: the mean reward per frame over the rollout, before the
-  speed penalty.
+- `eval/reward`: the mean reward per frame over the rollout, the one the
+  policy maximises: `eval/cos_sum` less `eval/speed_penalty`.
+- `eval/cos_sum`: the mean sum of the arms' cosines per frame. Without
+  speed limits it equals `eval/reward`.
 - `eval/speed_penalty`: the mean speed penalty per frame.
 - `eval/speed/arm<i>`: each arm's median speed, in revolutions per second.
 - `eval/upright`: the share of its frames with every arm within 30° of
