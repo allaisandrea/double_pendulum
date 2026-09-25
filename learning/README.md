@@ -8,6 +8,8 @@ directory.
   `testing_lib.py` builds small ones for tests.
 - `world_model/`: an auto-regressive world model of the pendulum. Given a
   window of steps, it predicts the next frame's observation.
+- `imagination/`: trains a policy with PPO, using the world model as the
+  simulator.
 
 Library modules end in `_lib`, and each has its tests next to it in
 `<module>_test.py`. A package's run configs are in its `configs/`.
@@ -58,3 +60,35 @@ with its sine and cosine put back on the unit circle.
 Because the change being predicted grows with the horizon, 1 − R² need not
 increase monotonically with it. Compare one horizon across runs rather than
 reading it as an error curve.
+
+## Training in imagination
+
+`imagination/train.py` runs PPO (after CleanRL's
+`ppo_continuous_action_isaacgym.py`) in a batch of environments that the
+world model steps.
+
+- **An episode** starts from a real window of the recordings and runs
+  `episode_steps` frames. Episodes end only by truncation, so returns are
+  bootstrapped from the critic's value of the state after the last step.
+- **The policy** sees the latest `policy_window` frames, each with the
+  action before it. It picks one of `action_bins` int8 actions,
+  `action_step` apart and centred on 0 (−64 … 64 in `base.toml`, just past
+  the ±60 of the recordings).
+- **Each imagined frame** is the world model's prediction. Each tag is
+  dropped as unseen with the probability the model gives, so the policy
+  meets misses as it will on the rig.
+- **The reward** is the sum of the cosines of the tags' camera-frame yaws.
+  The camera is upside down, so a hanging arm scores −1 and an upright one
+  +1.
+
+```sh
+uv run python -m imagination.train imagination/configs/base.toml --name first
+uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
+```
+
+`world_model` in the config names the checkpoint to use. Every
+`eval_every` iterations the policy acts greedily from a fixed set of real
+starts for `eval_steps` frames: `eval/reward` is the mean reward per frame,
+`eval/upright` the share of frames with every tag within 30° of upright,
+each also over the second half of the rollout. The checkpoint goes to
+`runs/<name>/policy.pt`.

@@ -1,0 +1,43 @@
+# The world model checkpoint, and the recordings whose windows start episodes.
+world_model = "runs/trapezoid/model.pt"
+data_dir = "data"
+recordings = ["1790282998", "1790279628", "1790281442"]
+
+# 9 actions 16 apart: -64 ... 64, just past the ±60 the world model has seen.
+action_step = 16
+action_bins = 9
+# Frames the policy sees, each with the action before it.
+policy_window = 16
+# Drop tags from imagined frames as often as the world model predicts.
+sample_missing = true
+
+hidden = 256
+layers = 2
+
+# Each iteration runs num_envs episodes of episode_steps frames (8 ms each),
+# then takes update_epochs passes over them in minibatches.
+num_envs = 4096
+episode_steps = 64
+iterations = 500
+update_epochs = 4
+minibatches = 8
+
+# The learning rate follows the trapezoid, counted in iterations.
+lr = 3e-4
+warmup_iterations = 10
+cooldown_fraction = 0.2
+
+# 0.995 looks about 200 frames (1.6 s) ahead.
+gamma = 0.995
+gae_lambda = 0.95
+clip = 0.2
+ent_coef = 0.01
+vf_coef = 0.5
+max_grad_norm = 0.5
+seed = 0
+
+eval_every = 25
+eval_envs = 1024
+eval_steps = 250
+
+wandb_project = "double-pendulum-imagination"

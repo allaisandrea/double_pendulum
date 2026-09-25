@@ -10,7 +10,6 @@ the latest checkpoint go to `runs/<name>/`, which must not exist yet; the
 name is also the run's name in Weights & Biases.
 """
 import argparse
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -18,29 +17,10 @@ import torch
 import wandb
 
 from common.data_lib import Windows, load_recordings
+from common.run_lib import git_commit, pick_device
 from common.schedule_lib import trapezoid_scheduler
 from world_model.evaluation_lib import evaluate
 from world_model.model_lib import WorldModel, last_seen, losses
-
-
-def pick_device(name: str) -> torch.device:
-    if name != "auto":
-        return torch.device(name)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def git_commit() -> str:
-    try:
-        out = subprocess.run(
-            ["git", "describe", "--always", "--dirty"], capture_output=True, text=True, check=True
-        )
-        return out.stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
 
 
 @torch.no_grad()

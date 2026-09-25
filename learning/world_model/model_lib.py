@@ -31,6 +31,13 @@ def last_seen(obs: torch.Tensor, present: torch.Tensor) -> tuple[torch.Tensor, t
     return ref * seen[..., None], seen
 
 
+def step_features(obs, present, action) -> torch.Tensor:
+    """[B, L, STEP_FEATURES]: each step's sin and cos, zeroed for unseen
+    tags, whether each tag was seen, and the action."""
+    seen = present.to(obs.dtype)
+    return torch.cat([(obs * seen[..., None]).flatten(2), seen, action[..., None]], dim=-1)
+
+
 class WorldModel(nn.Module):
     def __init__(self, window: int, hidden: int, layers: int, delta_scale: float):
         super().__init__()
@@ -49,15 +56,7 @@ class WorldModel(nn.Module):
         obs [B, window, NUM_TAGS, 2], present [B, window, NUM_TAGS], action [B, window].
         """
         b = obs.shape[0]
-        seen = present.to(obs.dtype)
-        x = torch.cat(
-            [
-                (obs * seen[..., None]).flatten(2),
-                seen,
-                action[..., None],
-            ],
-            dim=-1,
-        ).reshape(b, -1)
+        x = step_features(obs, present, action).reshape(b, -1)
         out = self.head(self.body(x)).reshape(b, NUM_TAGS, 3)
         return out[..., :2], out[..., 2]
 
@@ -67,6 +66,16 @@ class WorldModel(nn.Module):
         delta, logit = self(obs, present, action)
         ref, has_ref = last_seen(obs, present)
         return ref + delta * self.delta_scale, logit, ref, has_ref
+
+
+def load_world_model(path, device) -> WorldModel:
+    """A checkpoint train.py saved, frozen, in eval mode."""
+    ck = torch.load(path, map_location=device)
+    cfg = ck["config"]
+    model = WorldModel(cfg["window"], cfg["hidden"], cfg["layers"], ck["delta_scale"])
+    model.load_state_dict(ck["model"])
+    model.requires_grad_(False)
+    return model.to(device).eval()
 
 
 def losses(model: WorldModel, obs, present, action, target, target_present):
