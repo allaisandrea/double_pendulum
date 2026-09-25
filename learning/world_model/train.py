@@ -1,16 +1,16 @@
 """Trains the world model and logs its metrics to Weights & Biases.
 
-    uv run python -m world_model.train world_model/configs/base.toml
-    uv run python -m world_model.train world_model/configs/base.toml --wandb disabled --steps 200
+    uv run python -m world_model.train world_model/configs/base.toml --name base
+    uv run python -m world_model.train world_model/configs/base.toml --name smoke --wandb disabled --steps 200
 
 Every `eval_every` steps, training pauses to evaluate on a fixed sample of
 windows from the training and the validation recordings: the same sample
 each time, drawn from `seed`. The run's config, its evaluation sample and
-the latest checkpoint go to `runs/<run name>/`.
+the latest checkpoint go to `runs/<name>/`, which must not exist yet; the
+name is also the run's name in Weights & Biases.
 """
 import argparse
 import subprocess
-import time
 import tomllib
 from pathlib import Path
 
@@ -56,10 +56,14 @@ def change_scale(windows: Windows, samples: int, generator: torch.Generator) -> 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("config", type=Path)
+    parser.add_argument("--name", required=True, help="the run's name, here and in W&B")
     parser.add_argument("--wandb", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--device", default="auto")
     parser.add_argument("--steps", type=int, help="override the config's steps")
     args = parser.parse_args()
+    out = Path("runs") / args.name
+    if out.exists():
+        raise SystemExit(f"{out} exists: pick another --name")
 
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
@@ -91,6 +95,7 @@ def main():
 
     run = wandb.init(
         project=cfg["wandb_project"],
+        name=args.name,
         config={
             **cfg,
             "commit": git_commit(),
@@ -101,11 +106,9 @@ def main():
         },
         mode=args.wandb,
     )
-    name = run.name or time.strftime("%Y%m%d-%H%M%S")
-    out = Path("runs") / name
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True)
     torch.save({k: v.cpu() for k, v in eval_index.items()}, out / "eval_index.pt")
-    print(f"{name}: {len(train)} training windows on {device}, delta_scale {scale:.4g}")
+    print(f"{args.name}: {len(train)} training windows on {device}, delta_scale {scale:.4g}")
 
     def log_eval(step):
         metrics = {}

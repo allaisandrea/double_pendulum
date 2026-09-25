@@ -31,14 +31,14 @@ Library modules end in `_lib`, and each has its tests next to it in
 ```sh
 aws --profile andrea-personal s3 sync s3://allais-andrea-store/double_pendulum/data/ data/
 uv run wandb login                                                 # once
-uv run python -m world_model.train world_model/configs/base.toml
-uv run python -m world_model.train world_model/configs/base.toml --wandb disabled --steps 200   # smoke test
+uv run python -m world_model.train world_model/configs/base.toml --name base
+uv run python -m world_model.train world_model/configs/base.toml --name smoke --wandb disabled --steps 200   # smoke test
 uv run pytest                                                      # every *_test.py
 ```
 
 The config names the training and validation recordings by directory
 name. The run's evaluation sample and latest checkpoint go to
-`runs/<run name>/`.
+`runs/<name>/`, which must not exist yet.
 
 ### Metrics
 
