@@ -20,6 +20,7 @@ def test_a_closed_loop_rollout_takes_actions_from_the_levels():
     run = closed_loop(agent, env, 7, greedy=False)
     assert run.prediction.shape == (7, 5, 3, 2)
     assert run.seen.shape == (7, 5, 3) and run.reward.shape == (7, 5)
+    assert run.value.shape == (7, 5)
     assert set(run.action.unique().tolist()) <= set(action_levels(16, 9).tolist())
 
 

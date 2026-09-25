@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from imagination.agent_lib import Agent
-from imagination.ppo_lib import gae, ppo_loss
+from imagination.ppo_lib import discounted_returns, gae, ppo_loss
 
 
 def test_gae_with_lambda_one_is_the_bootstrapped_discounted_return():
@@ -31,3 +31,13 @@ def test_a_fresh_policy_is_near_uniform_and_the_loss_has_no_ratio_change():
     _, stats = ppo_loss(agent, x, bins, dist.log_prob(bins).detach(), torch.randn(64), torch.randn(64), cfg)
     assert stats["approx_kl"].item() == pytest.approx(0.0, abs=1e-6)
     assert stats["clipfrac"].item() == 0.0
+
+
+def test_discounted_returns_keep_only_frames_the_run_measures():
+    rewards = torch.ones(10, 2)
+    # At gamma 0.5 the discount falls to 1/8 in 3 frames, so the first 7 count.
+    ret = discounted_returns(rewards, gamma=0.5, tail=0.125)
+    assert ret.shape == (7, 2)
+    assert ret[-1, 0].item() == pytest.approx(sum(0.5**k for k in range(4)))
+    assert ret[0, 0].item() == pytest.approx(sum(0.5**k for k in range(10)))
+    assert discounted_returns(rewards, gamma=0.99).shape == (0, 2)

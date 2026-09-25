@@ -28,18 +28,42 @@ from common.run_lib import git_commit, pick_device
 from common.schedule_lib import trapezoid_scheduler
 from imagination.agent_lib import Agent
 from imagination.env_lib import ImaginedEnv, action_levels, upright
-from imagination.ppo_lib import gae, ppo_loss
+from imagination.ppo_lib import discounted_returns, gae, ppo_loss
 from imagination.rollout_lib import Rollout, from_hanging, write_rollout_video
 from world_model.model_lib import load_world_model
 
 def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
-    """The evaluation's metrics, and its rollouts."""
+    """The evaluation's metrics, and its rollout.
+
+    The critic is checked against the rollout's actual discounted return,
+    in the critic's units (rewards scaled by 1 - gamma), over the frames
+    early enough for the rest of the rollout to measure it. The rollout is
+    greedy while the critic values the sampling policy, so some bias is
+    expected.
+    """
+    gamma = cfg["gamma"]
     run = from_hanging(agent, env, cfg["eval_steps"], cfg["eval_seed"])
+    actual = discounted_returns(run.reward[:, 0] * (1 - gamma), gamma)
+    value = run.value[: len(actual), 0]
     metrics = {
         "eval/reward": run.reward.mean().item(),
         "eval/upright": upright(correct_yaws(run.prediction, env.hanging)).float().mean().item(),
         "eval/mean_abs_action": run.action.abs().float().mean().item(),
+        "eval/value_hanging": run.value[0, 0].item(),
     }
+    if len(actual):
+        seconds = (torch.arange(len(actual)) * 0.008).tolist()
+        metrics |= {
+            "eval/value_error": (value - actual).abs().mean().item(),
+            "eval/value_bias": (value - actual).mean().item(),
+            "eval/value_vs_return": wandb.plot.line_series(
+                xs=seconds,
+                ys=[value.tolist(), actual.tolist()],
+                keys=["critic's value", "actual discounted return"],
+                title="Critic against the evaluation rollout",
+                xname="seconds from hanging",
+            ),
+        }
     return metrics, run
 
 
@@ -157,6 +181,8 @@ def main():
             "train/reward_last_step": reward_buf[-1].mean().item(),
             "train/upright": up_buf.mean().item(),
             "train/explained_variance": (1 - (rets - values).var() / rets.var()).item(),
+            "train/value_mean": values.mean().item(),
+            "train/return_mean": rets.mean().item(),
             "lr": sched.get_last_lr()[0],
             "rollout_s": rollout_s,
             "iteration_s": time.perf_counter() - started,
@@ -168,7 +194,8 @@ def main():
             print(
                 f"iteration {it}: reward {metrics['train/reward']:.3f},"
                 f" eval {metrics['eval/reward']:.3f}"
-                f" (upright {metrics['eval/upright']:.1%}),"
+                f" (upright {metrics['eval/upright']:.1%},"
+                f" value error {metrics.get('eval/value_error', float('nan')):.3f}),"
                 f" entropy {metrics['train/entropy']:.3f}, {metrics['iteration_s']:.1f} s",
                 flush=True,
             )
