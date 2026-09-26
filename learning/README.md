@@ -282,3 +282,36 @@ Logged at each evaluation (see above):
 At the end of training:
 
 - `rollout_from_hanging`: the video of the last evaluation's rollout.
+
+## Training in the cloud
+
+`cloud/` runs training jobs on EC2 instances of their own, so that
+training need not share the Mac with the rig. `cloud/setup.sh`, run once,
+creates the IAM role the instances run as and stores the W&B key from
+`~/.netrc` in Secrets Manager. Then, from `learning/`:
+
+```sh
+uv run python cloud/launch.py bench bench-g6 --instance g6.xlarge --follow
+uv run python cloud/launch.py world_model wm4 world_model/configs/base.toml --follow
+uv run python cloud/launch.py policy ppo-wm4 imagination/configs/base.toml -- --set seed=1
+```
+
+`launch.py` packages the current commit (the working tree must be clean)
+to `s3://allais-andrea-store/double_pendulum/code/`, and starts a spot
+instance (`--on-demand` for one that is not) from AWS's Deep Learning Base
+GPU AMI. On it, `cloud/job.sh` installs `uv`, syncs the data, fetches the
+world model a policy config names from the bucket's `runs/`, trains, and
+syncs the run directory and its log to
+`s3://allais-andrea-store/double_pendulum/runs/<kind>/<name>/` every 5
+minutes and at the end, with `job_status`. Then the instance terminates
+itself, as it does after `--max-hours` (12) whatever happens. `--follow`
+prints the log as it arrives.
+
+A policy job launched again with the same name resumes from its latest
+checkpoint there, which is how to carry on after a spot interruption. A
+world model job starts over. A `bench` job times 100 policy iterations
+and 5000 world model steps, without W&B, to compare instances with the
+Mac.
+
+A policy config's `world_model` must be in the bucket's `runs/` too:
+`aws s3 sync runs/world_model/<name> s3://allais-andrea-store/double_pendulum/runs/world_model/<name>`.
