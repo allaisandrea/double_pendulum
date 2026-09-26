@@ -36,12 +36,14 @@ upright_start_fraction = 0.0
 num_envs = 4096
 rollout_steps = 64
 reset_horizons = 2
-iterations = 500
+# At lr 1e-3, policies found the balancing solution between iterations
+# 1000 and 1400; 2000 reaches what 5000 did at 3e-4, in an hour.
+iterations = 2000
 update_epochs = 4
 minibatches = 8
 
 # The learning rate follows the trapezoid, counted in iterations.
-lr = 3e-4
+lr = 1e-3
 warmup_iterations = 10
 cooldown_fraction = 0.2
 
