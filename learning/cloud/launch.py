@@ -63,6 +63,28 @@ exec bash learning/cloud/job.sh {S3_ROOT} {quoted}
 """
 
 
+# Errors that another availability zone may not have.
+ZONE_ERRORS = ("InsufficientInstanceCapacity", "Unsupported", "SpotMaxPriceTooLow", "InsufficientCapacity")
+
+
+def launch_in_some_zone(run: list[str], profile: str) -> str:
+    """Runs `run` in each public subnet in turn, until one has capacity.
+    The account has no default VPC; its VPC's subnets give public IPs, and
+    its default security group lets the instance reach the internet."""
+    subnets = aws("ec2", "describe-subnets", "--filters", "Name=map-public-ip-on-launch,Values=true",
+                  "--query", "Subnets[].[SubnetId,AvailabilityZone]", "--output", "text", profile=profile)
+    tried = []
+    for line in subnets.splitlines():
+        subnet, zone = line.split()
+        out = subprocess.run(["aws", "--profile", profile, *run, "--subnet-id", subnet], capture_output=True, text=True)
+        if out.returncode == 0:
+            return out.stdout.strip()
+        tried.append(f"{zone}: {out.stderr.strip()}")
+        if not any(e in out.stderr for e in ZONE_ERRORS):
+            break
+    raise SystemExit("could not start the instance:\n  " + "\n  ".join(tried))
+
+
 def main():
     argv = sys.argv[1:]
     extra = argv[argv.index("--") + 1 :] if "--" in argv else []
@@ -99,7 +121,7 @@ def main():
         run += ["--instance-market-options", json.dumps(
             {"MarketType": "spot", "SpotOptions": {"SpotInstanceType": "one-time", "InstanceInterruptionBehavior": "terminate"}}
         )]
-    instance = aws(*run, profile=args.profile)
+    instance = launch_in_some_zone(run, args.profile)
     run_uri = f"{S3_ROOT}/runs/{args.kind}/{args.name}"
     print(f"{instance}: {args.kind} {args.name} on {'on-demand' if args.on_demand else 'spot'} {args.instance}; "
           f"its run and log go to {run_uri}")
