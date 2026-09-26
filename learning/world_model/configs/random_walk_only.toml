@@ -34,3 +34,4 @@ wandb_project = "double-pendulum-world-model"
 [val]
 val_random_walk = ["1790281442"]
 val_policy = ["1790374602"]
+val_policy_wm2 = ["1790378604"]

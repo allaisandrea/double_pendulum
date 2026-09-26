@@ -1,8 +1,9 @@
 # Recordings are directories under data_dir holding frames.arrows.
 data_dir = "data"
-# Random-walk recordings, and the first collection with a trained policy
-# (ppo-speed, 30 min of 10 s spin-ups from hanging).
-train = ["1790282998", "1790279628", "1790372784"]
+# Random-walk recordings, then collections with trained policies: 30 min
+# with ppo-speed (greedy) and 120 min with ppo-wm2 (sampled), both 10 s
+# spin-ups from hanging.
+train = ["1790282998", "1790279628", "1790372784", "1790378922"]
 
 # Steps of history the model sees. The action reaches the motor about
 # 27 ms (3-4 frames) after capture, so this needs to reach well past that.
@@ -17,7 +18,8 @@ lr = 1e-3
 warmup_steps = 300
 cooldown_fraction = 0.2
 weight_decay = 1e-4
-steps = 20000
+# About 3 hours of data: long enough to see it several times over.
+steps = 100000
 bce_weight = 0.1
 seed = 0
 
@@ -34,3 +36,4 @@ wandb_project = "double-pendulum-world-model"
 [val]
 val_random_walk = ["1790281442"]
 val_policy = ["1790374602"]
+val_policy_wm2 = ["1790378604"]
