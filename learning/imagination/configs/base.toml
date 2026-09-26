@@ -23,6 +23,10 @@ speed_penalty = 1.0
 hidden = 256
 layers = 2
 
+# The share of episode starts drawn from windows whose last frame has every
+# arm within 30° of upright; the rest are drawn uniformly.
+upright_start_fraction = 0.0
+
 # num_envs environments carry on across iterations. Each iteration runs
 # them for rollout_steps frames (8 ms each), then takes update_epochs passes
 # over them in minibatches. After each frame an environment starts again

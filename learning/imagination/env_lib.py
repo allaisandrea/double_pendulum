@@ -74,12 +74,12 @@ class ImaginedEnv:
         """Size of the policy's input."""
         return self.policy_window * STEP_FEATURES
 
-    def reset(self, starts: Windows, index: torch.Tensor):
+    def reset(self, starts: "Windows | Starts", index: torch.Tensor):
         """Starts one environment from each window at `index`, of `history` steps."""
         assert starts.length == self.history
         self.reset_to(starts.gather(index))
 
-    def restart(self, which: torch.Tensor, starts: Windows, generator: torch.Generator):
+    def restart(self, which: torch.Tensor, starts: "Windows | Starts", generator: torch.Generator):
         """Starts the environments where `which` [N], on the CPU, holds
         again, each from a window of `starts` drawn with `generator`.
         Keeping `which` on the CPU spares waiting for the device to count."""
@@ -174,6 +174,35 @@ def speed(before: torch.Tensor, after: torch.Tensor) -> torch.Tensor:
     turned = torch.atan2(after[..., 0], after[..., 1]) - torch.atan2(before[..., 0], before[..., 1])
     turned = torch.remainder(turned + math.pi, 2 * math.pi) - math.pi
     return turned.abs() / (2 * math.pi * FRAME_S)
+
+
+class Starts:
+    """Where episodes start: windows of the recordings, drawn uniformly, but
+    for `upright_fraction` of them, drawn from the windows whose last frame
+    has every arm seen and within 30° of upright. Starting some episodes up
+    there lets the critic learn what staying up is worth. It works like
+    `Windows` for `ImaginedEnv.reset` and `restart`."""
+
+    def __init__(self, windows: Windows, hanging: torch.Tensor, upright_fraction: float = 0.0):
+        self.windows, self.length = windows, windows.length
+        self.upright_fraction = upright_fraction
+        last = windows.starts + windows.length - 1
+        up = upright(correct_yaws(windows.obs[last], hanging.to(windows.obs.device)))
+        self.upright = torch.nonzero(up & windows.present[last].all(-1)).squeeze(1).cpu()
+
+    def __len__(self) -> int:
+        return len(self.windows)
+
+    def gather(self, index: torch.Tensor) -> Batch:
+        return self.windows.gather(index)
+
+    def sample(self, n: int, generator: torch.Generator | None = None) -> torch.Tensor:
+        index = self.windows.sample(n, generator)
+        if self.upright_fraction > 0 and len(self.upright):
+            pick = torch.rand(n, generator=generator) < self.upright_fraction
+            up = self.upright[torch.randint(len(self.upright), (n,), generator=generator)]
+            index = torch.where(pick.to(index.device), up.to(index.device), index)
+        return index
 
 
 def reward(obs: torch.Tensor) -> torch.Tensor:

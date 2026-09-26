@@ -100,6 +100,11 @@ world model steps.
   values give the long run more weight. Episodes end only by truncation,
   so returns are bootstrapped from the critic's value of the state an
   episode would have gone on to, at a reset as at the end of an iteration.
+- **Upright starts**: `upright_start_fraction` of the episode starts are
+  drawn from the recorded windows whose last frame has every arm seen and
+  within 30° of upright (0 in `base.toml`), so the critic can learn what
+  staying up is worth. The collections with trained policies hold about
+  19,000 such windows.
 - **The policy** sees the latest `policy_window` frames, each with the
   action before it. It picks one of `action_bins` int8 actions,
   `action_step` apart and centred on 0 (−64 … 64 in `base.toml`, just past

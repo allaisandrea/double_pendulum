@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 
 from common.data_lib import ACTION_SCALE, Batch, Recording, Windows
-from imagination.env_lib import ImaginedEnv, action_levels, reward
+from imagination.env_lib import ImaginedEnv, Starts, action_levels, reward
 
 STRAIGHT = torch.tensor([[0.0, -1.0]] * 3)
 from world_model.model_lib import STEP_FEATURES, WorldModel
@@ -152,3 +152,16 @@ def test_an_arm_never_seen_is_not_penalised():
     env.reset_to(Batch(torch.tensor([[0.0, 1.0]] * 3).expand(1, env.history, 3, 2).clone(), present, torch.zeros(1, env.history)))
     env.step(torch.tensor([4]))
     assert env.speed[0, 1].item() == 0.0 and env.speed[0, 0].item() > 1.0
+
+
+def test_upright_starts_draw_their_share_from_upright_windows():
+    up, down = [[0.0, 1.0]] * 3, [[0.0, -1.0]] * 3
+    obs = torch.tensor([down] * 10 + [up] + [down] * 10)
+    rec = Recording("s", obs.numpy(), torch.ones(21, 3, dtype=torch.bool).numpy(), torch.zeros(21).numpy())
+    windows = Windows([rec], 3, "cpu")
+    starts = Starts(windows, STRAIGHT, upright_fraction=0.5)
+    assert starts.upright.tolist() == [8]  # the window ending at frame 10
+    index = starts.sample(4000, torch.Generator().manual_seed(0))
+    share = (index == 8).float().mean().item()
+    assert 0.47 < share < 0.54  # half on purpose, and 1 in 19 of the rest
+    assert (Starts(windows, STRAIGHT).sample(4000, torch.Generator().manual_seed(0)) == 8).float().mean() < 0.08

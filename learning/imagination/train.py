@@ -44,7 +44,7 @@ from common.data_lib import FRAME_S, Windows, correct_yaws, hanging_yaws, load_r
 from common.run_lib import Timer, git_commit, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid_scheduler
 from imagination.agent_lib import Agent
-from imagination.env_lib import ImaginedEnv, action_levels, upright
+from imagination.env_lib import ImaginedEnv, Starts, action_levels, upright
 from imagination.ppo_lib import discounted_returns, gae, ppo_loss
 from imagination.rollout_lib import Rollout, from_hanging, write_rollout_video
 from world_model.model_lib import load_world_model
@@ -154,7 +154,7 @@ def main(argv=None):
     env = ImaginedEnv(*env_args)
     # Evaluating resets its environment, so it gets one of its own.
     eval_env = ImaginedEnv(*env_args)
-    starts = Windows(recordings, env.history, device)
+    starts = Starts(Windows(recordings, env.history, device), hanging, cfg.get("upright_start_fraction", 0.0))
     T, N, gamma = cfg["rollout_steps"], cfg["num_envs"], cfg["gamma"]
     reset_p = (1 - gamma) / cfg["reset_horizons"]
 
@@ -197,7 +197,8 @@ def main(argv=None):
     print(
         f"{name}: {'resuming at iteration ' + str(first) + ', ' if ck else ''}"
         f"actions {levels.tolist()}, {len(starts)} start windows on {device},"
-        f" hanging yaws {', '.join(f'{d:.1f}°' for d in hanging_deg)}"
+        f" hanging yaws {', '.join(f'{d:.1f}°' for d in hanging_deg)},"
+        f" {len(starts.upright)} upright, {starts.upright_fraction:.0%} of starts from them"
     )
 
     batch = T * N
