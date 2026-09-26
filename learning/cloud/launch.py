@@ -15,7 +15,6 @@ it from its latest checkpoint there.
 Needs the IAM role and secret cloud/setup.sh creates.
 """
 import argparse
-import base64
 import json
 import os
 import subprocess
@@ -29,11 +28,11 @@ AMI_PARAMETER = "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu
 LEARNING = Path(__file__).resolve().parents[1]
 
 
-def aws(*args: str, profile: str, capture=True) -> str:
-    out = subprocess.run(
-        ["aws", "--profile", profile, *args], check=True, capture_output=capture, text=True
-    )
-    return out.stdout.strip() if capture else ""
+def aws(*args: str, profile: str) -> str:
+    out = subprocess.run(["aws", "--profile", profile, *args], capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit(f"aws {args[0]} {args[1]}: {out.stderr.strip()}")
+    return out.stdout.strip()
 
 
 def package(profile: str) -> str:
@@ -89,7 +88,8 @@ def main():
         "--instance-type", args.instance,
         "--iam-instance-profile", f"Name={ROLE}",
         "--instance-initiated-shutdown-behavior", "terminate",
-        "--user-data", base64.b64encode(user_data(code, [args.kind, args.name, args.config, *extra], args.max_hours).encode()).decode(),
+        # The CLI base64-encodes the user data itself.
+        "--user-data", user_data(code, [args.kind, args.name, args.config, *extra], args.max_hours),
         "--tag-specifications", json.dumps(
             [{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": f"{args.kind}/{args.name}"}]}]
         ),
