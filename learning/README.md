@@ -72,6 +72,14 @@ fed back as seen, with its sine and cosine put back on the unit circle.
 - `{train,val}/copy_last/hNNN`: the same score for predicting no change,
   which comes out at about 1. It is the reference line.
 
+`world_model.compare` evaluates several checkpoints on the same fixed
+windows of any recordings, so models trained or validated on different
+data compare like for like:
+
+```sh
+uv run python -m world_model.compare runs/world_model/wm3/model.pt runs/world_model/wm-with-policy-50k/model.pt --val 1790378604
+```
+
 Because the change being predicted grows with the horizon, 1 − R² need not
 increase monotonically with it. Compare one horizon across runs rather than
 reading it as an error curve.
@@ -117,6 +125,20 @@ world model steps.
 uv run python -m imagination.train imagination/configs/base.toml --name first
 uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
 uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_000100.pt
+```
+
+`--set KEY=VALUE` overrides one config value for a new run (VALUE as
+TOML, e.g. `--set gamma=0.998`), for experiments that change one thing.
+
+The evaluation during training is one rollout, which a chaotic system
+makes noisy. `imagination.evaluate` runs many from hanging (64 by
+default), each with its own tag misses from one seeded generator, and
+reports the mean sum of cosines with its standard error, the upright
+share, the speed penalty and the first arm's speeds, for several policies
+in one world model:
+
+```sh
+uv run python -m imagination.evaluate runs/policy/*/policy.pt --world-model runs/world_model/wm3/model.pt
 ```
 
 Every `checkpoint_every` iterations, and at the end, the whole training

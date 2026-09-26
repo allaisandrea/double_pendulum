@@ -1,9 +1,9 @@
 # The world model checkpoint, and the recordings whose windows start episodes.
-world_model = "runs/world_model/wm-with-policy-50k/model.pt"
+world_model = "runs/world_model/wm3/model.pt"
 data_dir = "data"
-# The random-walk recordings and the first collection with a trained policy
-# (ppo-speed); its 5-minute validation recording is left out.
-recordings = ["1790282998", "1790279628", "1790281442", "1790372784"]
+# The random-walk recordings and the collections with trained policies
+# (ppo-speed, ppo-wm2); their 5-minute validation recordings are left out.
+recordings = ["1790282998", "1790279628", "1790281442", "1790372784", "1790378922"]
 
 # 9 actions 16 apart: -64 ... 64, just past the ±60 the world model has seen.
 action_step = 16

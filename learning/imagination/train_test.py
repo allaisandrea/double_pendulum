@@ -90,3 +90,12 @@ def test_a_new_run_needs_a_name_and_a_resume_takes_nothing_else(workdir):
         main(["base.toml", "--wandb", "disabled"])
     with pytest.raises(SystemExit):
         main(["base.toml", "--resume", "x.pt", "--wandb", "disabled"])
+
+
+def test_set_overrides_a_config_value_and_refuses_unknown_keys(workdir):
+    main(["base.toml", "--name", "tweaked", "--iterations", "2", "--set", "gamma=0.8", "--set", "hidden=4",
+          "--wandb", "disabled", "--device", "cpu"])
+    cfg = torch.load(workdir / "runs/policy/tweaked/policy.pt", weights_only=False)["config"]
+    assert cfg["gamma"] == 0.8 and cfg["hidden"] == 4
+    with pytest.raises(SystemExit):
+        main(["base.toml", "--name", "bad", "--set", "no_such_key=1", "--wandb", "disabled", "--device", "cpu"])

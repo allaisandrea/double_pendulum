@@ -3,6 +3,7 @@
     uv run python -m imagination.train imagination/configs/base.toml --name first
     uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
     uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_000100.pt
+    uv run python -m imagination.train imagination/configs/base.toml --name greedier --set ent_coef=0.003
 
 `num_envs` environments start from real windows of the recordings and
 carry on from one iteration to the next. Each iteration runs them for
@@ -97,9 +98,16 @@ def parse_args(argv):
     parser.add_argument("--wandb", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--device", default="auto")
     parser.add_argument("--iterations", type=int, help="override a new run's iterations")
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="override a new run's config value, VALUE as TOML (e.g. gamma=0.998); repeatable",
+    )
     args = parser.parse_args(argv)
     if args.resume:
-        if args.config or args.name or args.iterations:
+        if args.config or args.name or args.iterations or args.set:
             parser.error("--resume takes the config, name and iterations from the checkpoint")
     elif not (args.config and args.name):
         parser.error("a new run needs a config and --name")
@@ -121,6 +129,11 @@ def main(argv=None):
             cfg = tomllib.load(f)
         if args.iterations is not None:
             cfg["iterations"] = args.iterations
+        for item in args.set:
+            key, sep, value = item.partition("=")
+            if not sep or key not in cfg:
+                raise SystemExit(f"--set {item}: not KEY=VALUE for a key in the config")
+            cfg[key] = tomllib.loads(f"v = {value}")["v"]
     device = pick_device(args.device)
     torch.manual_seed(cfg["seed"])
     generator = torch.Generator().manual_seed(cfg["seed"])
