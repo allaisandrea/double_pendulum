@@ -98,7 +98,7 @@ def main():
     parser.add_argument("kind", choices=["world_model", "policy", "bench", "run", "scale", "sweep"])
     parser.add_argument("name")
     parser.add_argument("config", nargs="?", default="-", help="relative to learning/, or for run a module; not for bench")
-    parser.add_argument("--instance", default="g6.xlarge,g5.xlarge",
+    parser.add_argument("--instance", default="g6.xlarge,g5.xlarge,g6e.xlarge",
                         help="instance types to try in turn, comma-separated")
     parser.add_argument("--on-demand", action="store_true")
     parser.add_argument("--follow", action="store_true", help="print the job's log until it ends")
