@@ -45,7 +45,8 @@ from world_model.model_lib import WorldModel, last_seen, rollout_losses
 
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
-OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm"}
+OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
+            "stochastic", "nll_beta"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -155,7 +156,7 @@ def main(argv=None):
     scale = change_scale(Windows(train_recs, w + 1, device), 65536, generator)
     if ck:
         scale = ck["delta_scale"]
-    model = WorldModel(w, cfg["hidden"], cfg["layers"], scale).to(device)
+    model = WorldModel(w, cfg["hidden"], cfg["layers"], scale, cfg.get("stochastic", False)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     # Training can run the model compiled, and its matrix products in
     # bfloat16 on CUDA; evaluation always runs it as it is, in float32.
@@ -247,8 +248,9 @@ def main(argv=None):
                     g["lr"] = lr
                 batch = train.gather(train.sample(cfg["batch_size"], generator))
                 with torch.autocast("cuda", torch.bfloat16, enabled=bf16):
-                    mse, bce = rollout_losses(forward, batch.obs, batch.present, batch.action, rollout_k)
-                    loss = mse + cfg["bce_weight"] * bce
+                    fit, bce, mse = rollout_losses(forward, batch.obs, batch.present, batch.action, rollout_k,
+                                                   cfg.get("nll_beta", 0.0))
+                    loss = fit + cfg["bce_weight"] * bce
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 if cfg.get("max_grad_norm"):
@@ -256,7 +258,10 @@ def main(argv=None):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["max_grad_norm"])
                 opt.step()
                 if step % cfg["log_every"] == 0:
-                    wandb.log({"train/batch_mse": mse.item(), "train/batch_bce": bce.item(), "lr": lr}, step=step)
+                    logged = {"train/batch_mse": mse.item(), "train/batch_bce": bce.item(), "lr": lr}
+                    if model.stochastic:
+                        logged["train/batch_beta_nll"] = fit.item()
+                    wandb.log(logged, step=step)
         metrics = {}
         if is_eval(step):
             with timer("eval"):

@@ -15,3 +15,10 @@ ppo-k8@250         runs/policy/ppo-k8/checkpoints/iter_000250.pt     new
 ppo-k8@500         runs/policy/ppo-k8/checkpoints/iter_000500.pt     new
 ppo-k8@1000        runs/policy/ppo-k8/checkpoints/iter_001000.pt     new
 ppo-k8             runs/policy/ppo-k8/policy.pt                      new
+# Session 2: policies trained in the one-step 512 x 3 (K = 1) and K = 6 world models.
+ppo-k1@2000        runs/policy/ppo-k1/checkpoints/iter_002000.pt     new
+ppo-k1             runs/policy/ppo-k1/policy.pt                      new
+ppo-k1-seed1@2000  runs/policy/ppo-k1-seed1/checkpoints/iter_002000.pt new
+ppo-k1-seed1       runs/policy/ppo-k1-seed1/policy.pt                new
+ppo-k6@1000        runs/policy/ppo-k6/checkpoints/iter_001000.pt     new
+ppo-k6             runs/policy/ppo-k6/policy.pt                      new

@@ -93,6 +93,7 @@ def load_policy(path, device) -> tuple[Agent, ImaginedEnv, dict]:
         hanging,
         cfg.get("speed_limits_rev_s"),
         cfg.get("speed_penalty", 0.0),
+        cfg.get("tau", 1.0),
     )
     agent = Agent(ck["features"], cfg["hidden"], cfg["layers"], len(levels)).to(device)
     agent.load_state_dict(ck["agent"])

@@ -1,0 +1,10 @@
+# The second ranking session: the candidates trained in the K = 1 and K = 6
+# world models, and ppo-wm3 again, to tie the sessions together (+1.33 in
+# the first). Their checkpoints are listed in pool.txt.
+ppo-wm3
+ppo-k1@2000
+ppo-k1
+ppo-k1-seed1@2000
+ppo-k1-seed1
+ppo-k6@1000
+ppo-k6

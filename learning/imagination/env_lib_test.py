@@ -33,7 +33,7 @@ class Recorder(WorldModel):
         super().__init__(window, 4, 1, 1.0)
         self.frame, self.logit, self.inputs = frame, logit, []
 
-    def predict(self, obs, present, action):
+    def predict(self, obs, present, action, tau=0.0, generator=None):
         self.inputs.append((obs.clone(), present.clone(), action.clone()))
         b = obs.shape[0]
         return self.frame.expand(b, -1, -1), torch.full((b, 3), self.logit), None, None

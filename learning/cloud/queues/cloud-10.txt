@@ -1,0 +1,5 @@
+# Stochastic world models: the one-step 512 x 3 recipe (rollout-k1) with a
+# diagonal Gaussian over each change, trained on beta-NLL (beta 0.5), and on
+# the plain likelihood (beta 0) to compare.
+world_model stoch-b05 world_model/configs/base.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 50000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500 --set stochastic=true --set nll_beta=0.5
+world_model stoch-b0 world_model/configs/base.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 50000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500 --set stochastic=true --set nll_beta=0.0

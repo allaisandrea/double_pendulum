@@ -124,7 +124,8 @@ def main(argv=None):
         out = Path("runs/policy") / name
         if out.exists():
             raise SystemExit(f"{out} exists: pick another --name")
-        cfg = load_config(args.config, args.set)
+        # tau: the spread of a stochastic world model's frames (default 1).
+        cfg = load_config(args.config, args.set, {"tau"})
         if args.iterations is not None:
             cfg["iterations"] = args.iterations
     device = pick_device(args.device)
@@ -143,6 +144,7 @@ def main(argv=None):
         hanging,
         cfg.get("speed_limits_rev_s"),
         cfg.get("speed_penalty", 0.0),
+        cfg.get("tau", 1.0),
     )
     env = ImaginedEnv(*env_args)
     # Evaluating resets its environment, so it gets one of its own.

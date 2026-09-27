@@ -87,6 +87,14 @@ def test_set_overrides_and_unknown_keys_are_refused(workdir):
         main(["base.toml", "--name", "bad", "--set", "nope=1", *COMMON])
 
 
+def test_a_stochastic_model_trains_loads_and_reports_its_calibration(workdir):
+    from world_model.model_lib import load_world_model
+
+    main(["base.toml", "--name", "stoch", "--set", "stochastic=true", "--set", "nll_beta=0.5", *COMMON])
+    model = load_world_model(workdir / "runs/world_model/stoch/model.pt", "cpu")
+    assert model.stochastic and model.head.out_features == 15
+
+
 def test_scale_trains_the_long_run_then_its_branches_and_carries_on_after_interruptions(workdir):
     from world_model.scale import main as scale
 

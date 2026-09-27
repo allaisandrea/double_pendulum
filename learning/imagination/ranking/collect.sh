@@ -1,9 +1,10 @@
 #!/bin/bash
 # Runs the ranking pool on the rig, from the repository root:
 #
-#   learning/imagination/ranking/collect.sh [SECONDS] [SEED]
+#   learning/imagination/ranking/collect.sh [SECONDS] [SEED] [POOL]
 #
-# Each policy in learning/imagination/ranking/pool.txt, exported to
+# Each policy in POOL (learning/imagination/ranking/pool.txt; the first
+# word of each line is a policy's name), exported to
 # learning/runs/ranking/<name>.json by `imagination.ranking export`, runs
 # greedily for SECONDS (120), driving 10 s and resting 5 s, without the
 # speed governor, in an order shuffled with SEED (0). Each run starts after
@@ -17,7 +18,7 @@
 cd "$(dirname "$0")/../../.." || exit 1
 SECONDS_PER=${1:-120}
 SEED=${2:-0}
-POOL=learning/imagination/ranking/pool.txt
+POOL=${3:-learning/imagination/ranking/pool.txt}
 STAMP=$(date +%s)
 MANIFEST=recordings/ranking-$STAMP-seed$SEED.tsv
 LOGS=recordings/ranking-$STAMP-seed$SEED-logs

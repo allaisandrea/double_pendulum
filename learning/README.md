@@ -39,10 +39,15 @@ uv run pytest                                                      # every *_tes
 - **The model** is an MLP (`hidden` wide, `layers` deep) over the
   flattened `window` of steps. Per tag, it outputs the change in sine and
   cosine since the tag was last seen in the window, and the logit of the
-  tag going unseen in the next frame.
+  tag going unseen in the next frame. A `stochastic` model also outputs
+  the change's log-variance: a normal distribution with a diagonal
+  covariance, from which imagination draws each frame, its spread scaled
+  by `tau` (1; 0 is its mean).
 - **The loss** is the mean squared error of the change, over the tags seen
   in the next frame, plus `bce_weight` times the cross-entropy of the
-  missing logits. With `rollout_train` K above 1, it is averaged over K
+  missing logits; for a stochastic model, the change's negative
+  log-likelihood instead, weighted by its variance to the power `nll_beta`
+  (beta-NLL; 0 is the plain likelihood). With `rollout_train` K above 1, it is averaged over K
   frames of rollout: the model predicts each frame from its own previous
   predictions, with gradients through the whole rollout
   (`model_lib.rollout_losses`). Training windows are drawn uniformly from
@@ -82,7 +87,11 @@ comparison. `--set KEY=VALUE` overrides a config value for a new run
 `rollout_train` (1), `max_grad_norm` (clips the gradient; long rollouts
 need it), `compile` and `bf16` (training steps through `torch.compile`,
 and in bfloat16 on CUDA; evaluation stays float32), `checkpoint_every`,
-`checkpoint_at` (a list of steps) and `cooldown_steps`.
+`checkpoint_at` (a list of steps), `cooldown_steps`, and `stochastic`
+and `nll_beta` (0). A stochastic model is also evaluated on its one-step
+NLL and calibration (`within_1sd`, `within_2sd`: 0.683 and 0.954 if
+calibrated); its open-loop rollouts follow its mean. Policies take `tau`
+from their config, and `imagination.ranking imagine` from `--tau`.
 
 Every `checkpoint_every` steps, at the steps in `checkpoint_at`, and at
 the end, the whole training state (model, optimizer, step, random

@@ -5,11 +5,13 @@ own predictions for `horizon` frames, with the recorded actions. Each
 predicted tag is fed back as seen, with its sin and cos put back on the
 unit circle.
 
-The metric at horizon h is 1 - R² of the change since each tag was last
-seen in the starting window: the error of the predicted change over the
+Rollouts of a stochastic model follow its mean. The metric at horizon h
+is 1 - R² of the change since each tag was last seen in the starting window: the error of the predicted change over the
 variance of the actual one. Copying the last observation predicts no
 change, and scores about 1; a perfect model scores 0. The copy-last
-score is logged alongside, computed on the same samples.
+score is logged alongside, computed on the same samples. A stochastic
+model is also scored on its one-step negative log-likelihood per element
+(nll) and calibration.
 """
 import torch
 from torch.nn import functional as F
@@ -44,6 +46,23 @@ def one_minus_r2(pred_change, change, mask) -> float:
     return (sse / sst).item()
 
 
+def calibration(model: WorldModel, batch: Batch) -> dict:
+    """A stochastic model's one-step calibration: the share of normalised
+    changes within 1 and 2 predicted standard deviations of the mean (0.683
+    and 0.954 if calibrated), and the median standard deviation."""
+    w = model.window
+    obs, present = batch.obs[:, :w], batch.present[:, :w]
+    delta, _, logvar = model(obs, present, batch.action[:, :w])
+    ref, has_ref = last_seen(obs, present)
+    mask = batch.present[:, w] & has_ref
+    z = ((delta - (batch.obs[:, w] - ref) / model.delta_scale) * (-0.5 * logvar).exp())[mask].abs()
+    return {
+        "within_1sd": (z < 1).float().mean().item(),
+        "within_2sd": (z < 2).float().mean().item(),
+        "median_sd": (0.5 * logvar[mask]).exp().median().item(),
+    }
+
+
 @torch.no_grad()
 def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int]) -> dict:
     """Metrics on the windows at `index`, which hold `window + max(horizons)`
@@ -57,7 +76,7 @@ def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int]) ->
     change = target - ref[:, None]
     pred_change = preds - ref[:, None]
 
-    mse, bce = losses(
+    fit, bce, mse = losses(
         model,
         batch.obs[:, :w],
         batch.present[:, :w],
@@ -66,6 +85,9 @@ def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int]) ->
         batch.present[:, w],
     )
     metrics = {"mse": mse.item(), "bce": bce.item()}
+    if model.stochastic:
+        metrics |= calibration(model, batch)
+        metrics["nll"] = fit.item()
     for h in horizons:
         metrics[f"one_minus_r2/h{h:03d}"] = one_minus_r2(
             pred_change[:, h - 1], change[:, h - 1], mask[:, h - 1]

@@ -72,7 +72,7 @@ def main():
                 def step():
                     b = gather()
                     with torch.autocast("cuda", torch.bfloat16, enabled=bf16 and device.type == "cuda"):
-                        mse, bce = losses(forward, b.obs[:, :w], b.present[:, :w], b.action[:, :w],
+                        mse, bce, _ = losses(forward, b.obs[:, :w], b.present[:, :w], b.action[:, :w],
                                           b.obs[:, w], b.present[:, w])
                         loss = mse + 0.1 * bce
                     opt.zero_grad(set_to_none=True)

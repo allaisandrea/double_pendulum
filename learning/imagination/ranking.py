@@ -93,6 +93,7 @@ def imagine(args):
         eps = [e for group, _ in groups for e in group]
         scores = np.array([e.real for e in eps])
         row = []
+        env.tau = args.tau
         for m, model in models.items():
             env.model = model
             # Each recording's starts, weighted by how many episodes it has.
@@ -152,6 +153,8 @@ def main():
     v.add_argument("--seconds", type=float, default=10.0)
     v.add_argument("--rollouts", type=int, default=8, help="per episode start")
     v.add_argument("--seed", type=int, default=0)
+    v.add_argument("--tau", type=float, default=1.0,
+                   help="the spread of stochastic world models' frames (0: their mean)")
     v.add_argument("--device", default="auto")
     a = sub.add_parser("agreement", help="score world models' rankings from imagine's scores")
     a.add_argument("scores", type=Path)

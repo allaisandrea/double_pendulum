@@ -16,6 +16,10 @@ With speed limits, each arm turning faster than its limit costs
 `speed_penalty` times the square of the excess, in revolutions per second,
 measured from the frame before.
 
+A stochastic world model's next frame is drawn from its predicted
+distribution, its spread scaled by `tau` (0: its mean), from the same
+generator as the misses.
+
 The world model works in the camera's raw yaws; only the reward, and what
 is drawn or measured as upright, use the corrected ones.
 """
@@ -50,6 +54,7 @@ class ImaginedEnv:
         hanging: torch.Tensor,
         speed_limits=None,
         speed_penalty: float = 0.0,
+        tau: float = 1.0,
     ):
         """`hanging` [NUM_TAGS, 2] is the sin and cos of each tag's yaw with
         the pendulum hanging still, from `hanging_yaws`. `speed_limits` are
@@ -65,7 +70,8 @@ class ImaginedEnv:
         self.levels = levels.to(model.delta_scale.device)
         self.actions = self.levels / ACTION_SCALE
         self.sample_missing = sample_missing
-        # Draws the misses when set, for repeatable runs; otherwise torch's
+        self.tau = tau
+        # Draws the misses, and a stochastic model's frames, when set, for repeatable runs; otherwise torch's
         # global generator does.
         self.generator: torch.Generator | None = None
 
@@ -142,7 +148,7 @@ class ImaginedEnv:
         self.action[:, -1] = self.actions[bin_index]
         w = self.model.window
         nxt, logit, _, _ = self.model.predict(
-            self.obs[:, -w:], self.present[:, -w:], self.action[:, -w:]
+            self.obs[:, -w:], self.present[:, -w:], self.action[:, -w:], self.tau, self.generator
         )
         nxt = F.normalize(nxt, dim=-1)
         # The predicted frame, including tags then dropped as unseen.
