@@ -12,6 +12,9 @@ directory.
 - `imagination/`: trains a policy with PPO, using the world model as the
   simulator.
 
+The world model experiments so far (scaling, rollout training, closed-loop
+fidelity) are written up in `docs/world_model_experiments.md`.
+
 Library modules end in `_lib`, and each has its tests next to it in
 `<module>_test.py`. A package's run configs are in its `configs/`.
 
