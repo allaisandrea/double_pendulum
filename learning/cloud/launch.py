@@ -7,10 +7,17 @@
 Packages the current commit (the working tree must be clean) to
 S3_ROOT/code/, and starts a spot instance (or --on-demand) from AWS's Deep
 Learning Base GPU AMI, which runs cloud/job.sh on the job and terminates
-itself when it ends, or after --max-hours (12) whatever happens. Arguments after -- go to the trainer. The run ends up
-in S3_ROOT/runs/KIND/NAME, with job.log and job_status; --follow prints the
-log as it arrives. Launching a policy job again with the same name resumes
-it from its latest checkpoint there.
+itself when it ends, or after --max-hours (12) whatever happens.
+Arguments after -- go to the trainer. The run ends up in run_uri(KIND,
+NAME), with job.log and job_status; --follow prints the log as it
+arrives.
+
+A job is pinned to the commit it was first launched with: launch.py
+writes it to job.json in the run's directory, and launching the job again
+with the same name, as the queue does after a spot interruption, runs that
+commit's code and carries on from the job's latest checkpoint, whatever
+has been committed since. --code HEAD (or a commit) runs other code
+instead, and pins it.
 
 Needs the IAM role and secret cloud/setup.sh creates.
 """
@@ -35,21 +42,49 @@ def aws(*args: str, profile: str) -> str:
     return out.stdout.strip()
 
 
-def package(profile: str) -> str:
-    """The S3 URI of the current commit's code, uploaded if new."""
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=LEARNING, capture_output=True, text=True)
-    if status.stdout.strip():
-        raise SystemExit("commit first: the job runs the current commit, not the working tree")
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=LEARNING, capture_output=True, text=True, check=True
-    ).stdout.strip()
+def run_uri(kind: str, name: str) -> str:
+    """Where a job's run, log, job_status and job.json go. Scale and sweep
+    jobs keep theirs with the world models they train."""
+    kind_dir = "world_model" if kind in ("scale", "sweep") else kind
+    return f"{S3_ROOT}/runs/{kind_dir}/{name}"
+
+
+def resolve(ref: str) -> str:
+    """The full hash of a commit; HEAD only with a clean working tree, as
+    the job runs the commit, not the working tree."""
+    if ref == "HEAD":
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=LEARNING, capture_output=True, text=True)
+        if status.stdout.strip():
+            raise SystemExit("commit first: the job runs the current commit, not the working tree")
+    out = subprocess.run(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=LEARNING,
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit(f"--code {ref}: not a commit")
+    return out.stdout.strip()
+
+
+def package(commit: str, profile: str) -> str:
+    """The S3 URI of `commit`'s code, uploaded if new."""
     uri = f"{S3_ROOT}/code/{commit}.tar.gz"
     if subprocess.run(["aws", "--profile", profile, "s3", "ls", uri], capture_output=True).returncode:
         archive = subprocess.run(
-            ["git", "archive", "--format=tar.gz", "HEAD"], cwd=LEARNING.parent, capture_output=True, check=True
+            ["git", "archive", "--format=tar.gz", commit], cwd=LEARNING.parent, capture_output=True, check=True
         ).stdout
         subprocess.run(["aws", "--profile", profile, "s3", "cp", "-", uri, "--only-show-errors"], input=archive, check=True)
     return uri
+
+
+def pinned(uri: str, profile: str) -> dict | None:
+    """The job.json a job's first launch wrote to its run directory, if any."""
+    out = subprocess.run(["aws", "--profile", profile, "s3", "cp", f"{uri}/job.json", "-"],
+                         capture_output=True, text=True)
+    return json.loads(out.stdout) if out.returncode == 0 else None
+
+
+def pin(uri: str, commit: str, job: list[str], profile: str):
+    record = {"commit": commit, "job": job, "pinned_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    subprocess.run(["aws", "--profile", profile, "s3", "cp", "-", f"{uri}/job.json", "--only-show-errors"],
+                   input=json.dumps(record, indent=1), text=True, check=True)
 
 
 def user_data(code: str, job: list[str], max_hours: float) -> str:
@@ -103,12 +138,24 @@ def main():
     parser.add_argument("--on-demand", action="store_true")
     parser.add_argument("--follow", action="store_true", help="print the job's log until it ends")
     parser.add_argument("--max-hours", type=float, default=12, help="terminate the instance after this, however the job goes")
+    parser.add_argument("--code", help="the commit to run, and pin (default: the job's pinned commit, "
+                                         "else HEAD)")
     parser.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "andrea-personal"))
     args = parser.parse_args(argv)
     if args.kind != "bench" and args.config == "-":
         parser.error(f"a {args.kind} job needs a config")
 
-    code = package(args.profile)
+    job = [args.kind, args.name, args.config, *extra]
+    uri = run_uri(args.kind, args.name)
+    record = pinned(uri, args.profile)
+    if args.code or not record:
+        commit, repin = resolve(args.code or "HEAD"), True
+    else:
+        commit, repin = record["commit"], False
+        print(f"{args.name} is pinned to {commit[:7]}", file=sys.stderr)
+        if record["job"] != job:
+            print(f"warning: {args.name} was first launched as {record['job']}", file=sys.stderr)
+    code = package(commit, args.profile)
     ami = aws("ssm", "get-parameter", "--name", AMI_PARAMETER, "--query", "Parameter.Value", "--output", "text", profile=args.profile)
     run = [
         "ec2", "run-instances",
@@ -116,7 +163,7 @@ def main():
         "--iam-instance-profile", f"Name={ROLE}",
         "--instance-initiated-shutdown-behavior", "terminate",
         # The CLI base64-encodes the user data itself.
-        "--user-data", user_data(code, [args.kind, args.name, args.config, *extra], args.max_hours),
+        "--user-data", user_data(code, job, args.max_hours),
         "--tag-specifications", json.dumps(
             [{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": f"{args.kind}/{args.name}"}]}]
         ),
@@ -127,13 +174,12 @@ def main():
             {"MarketType": "spot", "SpotOptions": {"SpotInstanceType": "one-time", "InstanceInterruptionBehavior": "terminate"}}
         )]
     instance, instance_type = launch_somewhere(run, args.instance.split(","), args.profile)
-    # Scale and sweep jobs keep their runs, and their log, with the world models.
-    kind_dir = "world_model" if args.kind in ("scale", "sweep") else args.kind
-    run_uri = f"{S3_ROOT}/runs/{kind_dir}/{args.name}"
-    print(f"{instance}: {args.kind} {args.name} on {'on-demand' if args.on_demand else 'spot'} {instance_type}; "
-          f"its run and log go to {run_uri}")
+    if repin:
+        pin(uri, commit, job, args.profile)
+    print(f"{instance}: {args.kind} {args.name} on {'on-demand' if args.on_demand else 'spot'} {instance_type} "
+          f"at {commit[:7]}; its run and log go to {uri}")
     if args.follow:
-        follow(instance, run_uri, args.profile)
+        follow(instance, uri, args.profile)
 
 
 def follow(instance: str, run_uri: str, profile: str):

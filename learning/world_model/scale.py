@@ -19,6 +19,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from common.run_lib import latest_checkpoint
 from world_model.train import main as train
 
 RUNS = Path("runs/world_model")
@@ -27,10 +28,10 @@ RUNS = Path("runs/world_model")
 def latest(run: str) -> Path | None:
     """The run's latest checkpoint. A run directory with none holds nothing
     to carry on from, so it is removed, for the run to start over."""
-    checkpoints = sorted((RUNS / run / "checkpoints").glob("step_*.pt"))
-    if not checkpoints and (RUNS / run).exists():
+    checkpoint = latest_checkpoint(RUNS / run)
+    if checkpoint is None and (RUNS / run).exists():
         shutil.rmtree(RUNS / run)
-    return checkpoints[-1] if checkpoints else None
+    return checkpoint
 
 
 def step_of(checkpoint: Path) -> int:

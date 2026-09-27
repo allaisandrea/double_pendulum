@@ -1,7 +1,9 @@
 """Helpers the training programs share."""
 import subprocess
 import time
+import tomllib
 from contextlib import contextmanager
+from pathlib import Path
 
 import torch
 
@@ -14,6 +16,26 @@ def pick_device(name: str) -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def load_config(path: Path, overrides: list[str], optional=frozenset()) -> dict:
+    """A TOML config, with each KEY=VALUE of `overrides` (--set) replacing
+    a key it has, or adding one of `optional`; VALUE is TOML."""
+    with open(path, "rb") as f:
+        cfg = tomllib.load(f)
+    for item in overrides:
+        key, sep, value = item.partition("=")
+        if not sep or (key not in cfg and key not in optional):
+            raise SystemExit(f"--set {item}: not KEY=VALUE for a key in the config")
+        cfg[key] = tomllib.loads(f"v = {value}")["v"]
+    return cfg
+
+
+def latest_checkpoint(run_dir: Path) -> Path | None:
+    """The latest of a run's checkpoints, named with zero-padded steps or
+    iterations, or None."""
+    checkpoints = sorted((Path(run_dir) / "checkpoints").glob("*.pt"))
+    return checkpoints[-1] if checkpoints else None
 
 
 def git_commit() -> str:

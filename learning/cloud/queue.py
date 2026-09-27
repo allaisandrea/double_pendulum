@@ -21,7 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from launch import S3_ROOT  # noqa: E402
+from launch import run_uri  # noqa: E402
 
 
 def aws(profile, *args):
@@ -29,8 +29,7 @@ def aws(profile, *args):
 
 
 def status(job, profile) -> str | None:
-    kind_dir = "world_model" if job["kind"] in ("scale", "sweep") else job["kind"]
-    out = aws(profile, "s3", "cp", f"{S3_ROOT}/runs/{kind_dir}/{job['name']}/job_status", "-")
+    out = aws(profile, "s3", "cp", f"{run_uri(job['kind'], job['name'])}/job_status", "-")
     return out.stdout.strip() if out.returncode == 0 else None
 
 

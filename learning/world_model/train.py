@@ -32,14 +32,13 @@ training, and logged at each evaluation.
 """
 import argparse
 import math
-import tomllib
 from pathlib import Path
 
 import torch
 import wandb
 
 from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
-from common.run_lib import Timer, git_commit, pick_device, rng_state, set_rng_state
+from common.run_lib import Timer, git_commit, load_config, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid
 from world_model.evaluation_lib import evaluate
 from world_model.model_lib import WorldModel, last_seen, rollout_losses
@@ -118,15 +117,9 @@ def main(argv=None):
         cfg["cooldown_steps"] = args.cooldown_steps
         cfg["branch_of"] = {"run": args.branch.parent.parent.name, "step": ck["step"]}
     if not ck:
-        with open(args.config, "rb") as f:
-            cfg = tomllib.load(f)
+        cfg = load_config(args.config, args.set, OPTIONAL)
         if args.steps is not None:
             cfg["steps"] = args.steps
-        for item in args.set:
-            key, sep, value = item.partition("=")
-            if not sep or (key not in cfg and key not in OPTIONAL):
-                raise SystemExit(f"--set {item}: not KEY=VALUE for a key in the config")
-            cfg[key] = tomllib.loads(f"v = {value}")["v"]
     start = ck["step"] if ck else 0
     if start >= cfg["steps"]:
         raise SystemExit(f"{args.resume} is from the last step: nothing to resume")

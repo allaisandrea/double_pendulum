@@ -34,14 +34,13 @@ of all the time timed so far.
 """
 import argparse
 import shutil
-import tomllib
 from pathlib import Path
 
 import torch
 import wandb
 
 from common.data_lib import FRAME_S, Windows, correct_yaws, hanging_yaws, load_recordings
-from common.run_lib import Timer, git_commit, pick_device, rng_state, set_rng_state
+from common.run_lib import Timer, git_commit, load_config, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid_scheduler
 from imagination.agent_lib import Agent
 from imagination.env_lib import ImaginedEnv, Starts, action_levels, upright
@@ -125,15 +124,9 @@ def main(argv=None):
         out = Path("runs/policy") / name
         if out.exists():
             raise SystemExit(f"{out} exists: pick another --name")
-        with open(args.config, "rb") as f:
-            cfg = tomllib.load(f)
+        cfg = load_config(args.config, args.set)
         if args.iterations is not None:
             cfg["iterations"] = args.iterations
-        for item in args.set:
-            key, sep, value = item.partition("=")
-            if not sep or key not in cfg:
-                raise SystemExit(f"--set {item}: not KEY=VALUE for a key in the config")
-            cfg[key] = tomllib.loads(f"v = {value}")["v"]
     device = pick_device(args.device)
     torch.manual_seed(cfg["seed"])
     generator = torch.Generator().manual_seed(cfg["seed"])

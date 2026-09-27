@@ -434,10 +434,15 @@ The kinds of job: `world_model` and `policy` train one run; `sweep` runs a
 `world_model.sweep` file and `scale` a `world_model.scale` model, whose
 runs must be named `<name>-*` and go to `runs/world_model/`; `run` runs
 any module (`python -m CONFIG ARGS`); `bench` times 100 policy iterations
-and 5000 world model steps without W&B. A policy, sweep or scale job
-launched again with the same name carries on from its checkpoints on S3,
-which is how to recover from a spot interruption; a `world_model` job
-starts over.
+and 5000 world model steps without W&B. A job launched again with the
+same name carries on from its checkpoints on S3, which is how to recover
+from a spot interruption.
+
+A job is pinned to the commit it was first launched with, recorded in
+`job.json` in its run directory: launched again, as the queue does after
+an interruption, it runs that commit's code, whatever has been committed
+since, and needs no clean working tree. `--code HEAD` (or a commit) runs
+and pins other code instead, to carry on under a fix, say.
 
 `queue.py` runs a file of such jobs (`cloud/queues/`), keeping `--spot`
 spot and `--on-demand` on-demand instances busy: it starts pending jobs

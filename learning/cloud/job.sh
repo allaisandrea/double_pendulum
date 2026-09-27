@@ -15,12 +15,12 @@
 # sweep, which runs world_model.sweep on the file CONFIG, whose runs must
 # be named NAME-*.
 #
-# The run directory and this job's log go to S3_ROOT/runs/KIND/NAME every
-# 5 minutes and at the end, with job_status holding the exit status. A
-# policy job that finds checkpoints of NAME there resumes from the latest,
-# so launching it again after a spot interruption carries on. A world
-# model job has no resume: it starts over, replacing what an interrupted
-# one left.
+# The run directory and this job's log go to S3_ROOT/runs/KIND/NAME
+# (launch.py's run_uri) every 5 minutes and at the end, with job_status
+# holding the exit status. A world_model or policy job that finds
+# checkpoints of NAME there carries on from the latest, and scale and
+# sweep jobs from theirs, so launching a job again after a spot
+# interruption carries on.
 set -uo pipefail
 export HOME=${HOME:-/root}
 S3_ROOT=$1 KIND=$2 NAME=$3 CONFIG=$4
@@ -68,6 +68,22 @@ if [ "$KIND" = world_model ] || [ "$KIND" = policy ] || [ "$KIND" = scale ] || [
     export WANDB_API_KEY
 fi
 
+# Trains NAME with the trainer MODULE (world_model.train or
+# imagination.train), carrying on from its latest checkpoint on S3 if it
+# has one: checkpoints are named with zero-padded steps or iterations.
+train() {
+    aws s3 sync "$RUN_URI" "$RUN_DIR" --only-show-errors
+    local latest
+    latest=$(ls "$RUN_DIR"/checkpoints/*.pt 2>/dev/null | tail -1)
+    if [ -n "$latest" ]; then
+        echo "resuming from $latest"
+        uv run python -m "$1" --resume "$latest"
+    else
+        rm -rf "$RUN_DIR"
+        uv run python -m "$1" "$CONFIG" --name "$NAME" "${ARGS[@]}"
+    fi
+}
+
 (while sleep 300; do upload; done) &
 UPLOADER=$!
 
@@ -84,25 +100,13 @@ t = torch.load('runs/policy/bench-policy/policy.pt', weights_only=False)['time']
 print('policy seconds per phase over 100 iterations:', {k: round(v, 1) for k, v in t.items()})"
         ;;
     world_model)
-        if aws s3 ls "$RUN_URI/" > /dev/null 2>&1; then
-            echo "replacing what an interrupted run left at $RUN_URI"
-            aws s3 rm "$RUN_URI" --recursive --only-show-errors
-        fi
-        uv run python -m world_model.train "$CONFIG" --name "$NAME" "${ARGS[@]}"
+        train world_model.train
         ;;
     policy)
         WM=$(uv run python -c "import tomllib; print(tomllib.load(open('$CONFIG', 'rb'))['world_model'])")
         aws s3 sync "$S3_ROOT/$(dirname "$WM")" "$(dirname "$WM")" --only-show-errors || exit 1
         [ -f "$WM" ] || { echo "no world model at $S3_ROOT/$WM"; exit 1; }
-        aws s3 sync "$RUN_URI" "$RUN_DIR" --only-show-errors
-        LATEST=$(ls "$RUN_DIR"/checkpoints/iter_*.pt 2>/dev/null | tail -1)
-        if [ -n "$LATEST" ]; then
-            echo "resuming from $LATEST"
-            uv run python -m imagination.train --resume "$LATEST"
-        else
-            rm -rf "$RUN_DIR"
-            uv run python -m imagination.train "$CONFIG" --name "$NAME" "${ARGS[@]}"
-        fi
+        train imagination.train
         ;;
     run)
         uv run python -m "$CONFIG" "${ARGS[@]}"
