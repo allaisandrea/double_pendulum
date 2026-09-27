@@ -318,3 +318,28 @@ Mac.
 
 A policy config's `world_model` must be in the bucket's `runs/` too:
 `aws s3 sync runs/world_model/<name> s3://allais-andrea-store/double_pendulum/runs/world_model/<name>`.
+
+## Ranking world models against the rig
+
+A world model is good to train policies in if it ranks policies the way
+the rig does (after SIMPLER, arXiv:2405.05941). The pool,
+`imagination/ranking/pool.txt`, holds 13 policies spread from +0.08 to
++2.29 predicted sum of cosines, ten of them new to the rig.
+
+```sh
+uv run python -m imagination.ranking export                # the pool, as runs/ranking/<name>.json
+learning/imagination/ranking/collect.sh 120 0              # from the repository root, at the rig
+uv run python -m imagination.ranking evaluate ../recordings/ranking-<stamp>-seed0.tsv \
+    --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt
+```
+
+`collect.sh` runs each policy greedily for 2 minutes, driving 10 s and
+resting 5 s, in a seeded random order, about 30 minutes in all; `kill -INT
+$(cat recordings/ranking.pid)` stops it. `evaluate` splits each recording
+into its drives after a rest (7 per 2 minutes), scores each on the rig
+(mean sum of cosines over its first 10 s) and in each world model, from
+rollouts started at the same recorded frames, greedy or sampled as the
+recording was. It prints each policy's rig score with its standard error
+and the predictions, then per world model the Pearson and Spearman
+correlations, the mean maximum rank violation (MMRV) and the mean
+absolute error, over all policies and over those new to the rig.

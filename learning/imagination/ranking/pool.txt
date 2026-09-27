@@ -1,0 +1,17 @@
+# The policy pool for ranking world models against the rig: name,
+# checkpoint (relative to learning/), and whether policy data it collected
+# is in the world models' training sets (seen) or it is new to the rig.
+# Spread across the range the K = 8 world model predicts, +0.08 to +2.29.
+ppo-speed          runs/policy/ppo-speed/policy.pt                   seen
+ppo-k8@100         runs/policy/ppo-k8/checkpoints/iter_000100.pt     new
+ppo-wm2            runs/policy/ppo-wm2/policy.pt                     seen
+exp-upright25      runs/policy/exp-upright25/policy.pt               new
+exp-base           runs/policy/exp-base/policy.pt                    new
+exp-ent03          runs/policy/exp-ent03/policy.pt                   new
+ppo-wm3-lr1e3-5k   runs/policy/ppo-wm3-lr1e3-5k/policy.pt            new
+ppo-wm3            runs/policy/ppo-wm3/policy.pt                     seen
+exp-lr1e3-2k       runs/policy/exp-lr1e3-2k/policy.pt                new
+ppo-k8@250         runs/policy/ppo-k8/checkpoints/iter_000250.pt     new
+ppo-k8@500         runs/policy/ppo-k8/checkpoints/iter_000500.pt     new
+ppo-k8@1000        runs/policy/ppo-k8/checkpoints/iter_001000.pt     new
+ppo-k8             runs/policy/ppo-k8/policy.pt                      new
