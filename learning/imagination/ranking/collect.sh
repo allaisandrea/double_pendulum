@@ -9,7 +9,7 @@
 # speed governor, in an order shuffled with SEED (0). Each run starts after
 # 15 s of rest, so from the pendulum hanging, and 120 s ends in a rest.
 # recordings/ranking-<stamp>-seed<SEED>.tsv lists each policy and its
-# recording, for `imagination.ranking evaluate`; each run's log goes beside
+# recording, for `imagination.ranking imagine`; each run's log goes beside
 # it. A failed run (the camera dropping, say) ends the session.
 #
 # `kill -INT $(cat recordings/ranking.pid)` stops the run under way as

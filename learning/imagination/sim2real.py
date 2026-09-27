@@ -9,9 +9,10 @@ of cosines over the first --seconds of driving in its recording, and each
 world model's prediction of it: the mean over --rollouts rollouts from
 hanging, as imagination.evaluate runs them. Prints the table, and per
 world model the mean absolute error, the correlation, and whether it
-ranks the policies as the rig does.
+ranks the policies as the rig does. --csv also writes the table.
 """
 import argparse
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +54,7 @@ def main():
     parser.add_argument("--seconds", type=float, default=10.0)
     parser.add_argument("--rollouts", type=int, default=32)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--csv", type=Path, help="also write the table here: policy, real, one column per world model")
     args = parser.parse_args()
     device = pick_device(args.device)
     hanging = hanging_yaws(load_recordings(Path("data"), HANGING)).numpy()
@@ -72,6 +74,12 @@ def main():
             predicted[name].append(v)
             row.append(v)
         print(f"{policy:16s} {real[policy]:+7.2f} " + " ".join(f"{v:+18.2f}" for v in row), flush=True)
+    if args.csv:
+        with open(args.csv, "w", newline="") as f:
+            out = csv.writer(f)
+            out.writerow(["policy", "real", *names])
+            for i, policy in enumerate(TESTS):
+                out.writerow([policy, round(real[policy], 4), *(round(predicted[n][i], 4) for n in names)])
     r = np.array(list(real.values()))
     for name in names:
         p = np.array(predicted[name])

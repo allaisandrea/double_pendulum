@@ -10,6 +10,7 @@ recorded window, the frames just before the drive, so that the world
 model sees exactly the state the rig was in, arm still swinging and all.
 The first drive is left out: it starts before the policy has a history.
 """
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,10 +108,98 @@ def spearman(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def agreement(real: np.ndarray, predicted: np.ndarray) -> dict:
-    """How well predicted scores match real ones, over policies."""
+    """How well predicted scores match real ones, over policies; bias is
+    the mean overrating (predicted - real)."""
     return {
         "pearson": float(np.corrcoef(real, predicted)[0, 1]),
         "spearman": spearman(real, predicted),
         "mmrv": mmrv(real, predicted),
         "mae": float(np.abs(predicted - real).mean()),
+        "bias": float((predicted - real).mean()),
     }
+
+
+def subsets(model: str, seen: np.ndarray, trained_in: list[str]) -> dict[str, np.ndarray]:
+    """The policies to score `model` over, as masks: all; new, those
+    whose data is in no world model's training set; and, when some policy
+    was trained in `model`, held_out, the others, and own, those. A world
+    model is biased towards its own policies, which PPO has tuned to its
+    errors: held_out measures it as an independent judge, own as the
+    forecaster of what is trained in it."""
+    own = np.array([t == model for t in trained_in])
+    out = {"all": np.ones_like(own), "new": ~seen}
+    if own.any():
+        out |= {"held_out": ~own, "own": own}
+    return out
+
+
+@dataclass
+class Scores:
+    """Each policy's rig score and each world model's prediction of it, as
+    `imagination.ranking imagine` writes them."""
+    policy: list[str]
+    trained_in: list[str]  # the world model each policy was trained in
+    seen: np.ndarray  # [policies] bool: its rig data is in the world models' training sets
+    episodes: np.ndarray  # [policies] int
+    rig: np.ndarray  # [policies]
+    rig_sem: np.ndarray  # [policies]
+    predicted: dict[str, np.ndarray]  # world model: [policies]
+
+
+FIXED = ["policy", "trained_in", "seen", "episodes", "rig", "rig_sem"]
+
+
+def write_scores(path: Path, s: Scores):
+    with open(path, "w", newline="") as f:
+        out = csv.writer(f)
+        out.writerow([*FIXED, *s.predicted])
+        for i, name in enumerate(s.policy):
+            out.writerow([name, s.trained_in[i], bool(s.seen[i]), int(s.episodes[i]), round(float(s.rig[i]), 4),
+                          round(float(s.rig_sem[i]), 4), *(round(float(p[i]), 4) for p in s.predicted.values())])
+
+
+def read_scores(path: Path) -> Scores:
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    column = lambda k, t=float: np.array([t(r[k]) for r in rows])
+    models = [k for k in rows[0] if k not in FIXED]
+    return Scores([r["policy"] for r in rows], [r["trained_in"] for r in rows], column("seen", lambda v: v == "True"),
+                  column("episodes", int), column("rig"), column("rig_sem"), {m: column(m) for m in models})
+
+
+@dataclass
+class Agreement:
+    world_model: str
+    policies: str  # the subset, as subsets() names it
+    n: int
+    metrics: dict  # agreement()'s
+
+
+def agreements(s: Scores) -> list[Agreement]:
+    """agreement() of each world model over each of its subsets() of at
+    least 3 policies."""
+    out = []
+    for m, p in s.predicted.items():
+        for label, keep in subsets(m, s.seen, s.trained_in).items():
+            if keep.sum() >= 3:
+                out.append(Agreement(m, label, int(keep.sum()), agreement(s.rig[keep], p[keep])))
+    return out
+
+
+def exploitation_gap(s: Scores, model: str) -> float | None:
+    """How much more `model` overrates the policies trained in it than the
+    others, or None if none was."""
+    masks = subsets(model, s.seen, s.trained_in)
+    if "own" not in masks:
+        return None
+    over = s.predicted[model] - s.rig
+    return float(over[masks["own"]].mean() - over[masks["held_out"]].mean())
+
+
+def write_agreements(path: Path, rows: list[Agreement]):
+    keys = ["pearson", "spearman", "mmrv", "mae", "bias"]
+    with open(path, "w", newline="") as f:
+        out = csv.writer(f)
+        out.writerow(["world_model", "policies", "n", *keys])
+        for a in rows:
+            out.writerow([a.world_model, a.policies, a.n, *(round(a.metrics[k], 4) for k in keys)])

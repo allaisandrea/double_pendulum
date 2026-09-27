@@ -6,8 +6,8 @@
 The long run, NAME, holds the learning rate constant after its warmup, for
 --steps, checkpointing at each of --branches. From each branch point b, a
 branch NAME-cd<b/1000>k (NAME-cd<b> for b not in thousands) cools the
-rate down over --cooldown-fraction * b steps, and so is the model trained for b steps on a trapezoid, at the
-cost of its cooldown alone. Arguments after -- go to world_model.train for
+rate down over another --cooldown-fraction * b steps: a model trained on a
+trapezoid for b steps plus its cooldown, at the cost of the cooldown alone. Arguments after -- go to world_model.train for
 the long run; branches take its config.
 
 Run again, it carries on from whatever an interruption left: the long run

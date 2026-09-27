@@ -1,20 +1,29 @@
 """Ranks policies on the rig and in world models, and scores the world models' rankings.
 
     uv run python -m imagination.ranking export
-    uv run python -m imagination.ranking evaluate ../recordings/ranking-*-seed0.tsv ../recordings/ranking-*-seed1.tsv \
-        --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt
+    uv run python -m imagination.ranking imagine ../recordings/ranking-*-seed0.tsv ../recordings/ranking-*-seed1.tsv \
+        --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt \
+        --scores runs/ranking/scores.csv
+    uv run python -m imagination.ranking agreement runs/ranking/scores.csv
 
 export writes each policy in the pool (imagination/ranking/pool.txt) as
 the harness's JSON, to runs/ranking/<name>.json, for
-imagination/ranking/collect.sh to run on the rig. evaluate reads the
-manifests that script writes (policy name, recording), pools each
-policy's episodes across all its recordings, scores it on the rig over
-them (imagination.ranking_lib), and
-in each world model from the same starts, greedy or sampling as the
-recording's policy did, then prints, per world model,
-how well its scores agree with the rig's: Pearson and Spearman
-correlation, mean maximum rank violation (MMRV) and mean absolute error,
-over all policies and over those new to the rig.
+imagination/ranking/collect.sh to run on the rig.
+
+imagine reads the manifests that script writes (policy name,
+recording), pools each policy's episodes across all its recordings,
+scores it on the rig over them (imagination.ranking_lib), and in each
+world model from the same starts, greedy or sampling as the recording's
+policy did. It prints the scores, writes them to --scores, and prints
+their agreement, as agreement does.
+
+agreement reads the scores and prints, per world model, how well they
+agree with the rig's: Pearson and Spearman correlation, mean maximum rank
+violation (MMRV), mean absolute error and bias (mean overrating), over
+all policies, those new to the rig, and, for a world model some policies
+were trained in, the others (held out) and those (own), with its
+exploitation gap: how much more it overrates its own policies than the
+others. It takes no rollouts, so new metrics need no new imagining.
 """
 import argparse
 from pathlib import Path
@@ -26,7 +35,8 @@ from common.data_lib import hanging_yaws, load_recordings
 from common.run_lib import pick_device
 from imagination.export_lib import export_policy
 from imagination.agent_lib import Agent
-from imagination.ranking_lib import agreement, episodes, imagined, sampled
+from imagination.ranking_lib import (Scores, agreements, episodes, exploitation_gap, imagined, read_scores,
+                                     sampled, write_agreements, write_scores)
 from imagination.rollout_lib import load_policy
 from imagination.sim2real import HANGING
 from world_model.model_lib import load_world_model
@@ -60,7 +70,7 @@ def export(args):
         print(f"{out}: from {checkpoint}")
 
 
-def evaluate(args):
+def imagine(args):
     device = pick_device(args.device)
     pool = read_pool(args.pool)
     hanging = hanging_yaws(load_recordings(Path("data"), HANGING)).numpy()
@@ -71,11 +81,11 @@ def evaluate(args):
                 name, recording = line.split("\t")
                 recordings.setdefault(name, []).append(recording)
     models = {p.parent.name: load_world_model(p, device) for p in args.world_models}
-    names, seen, real, sem, predicted = [], [], [], [], {m: [] for m in models}
+    names, seen, counts, trained_in, real, sem, predicted = [], [], [], [], [], [], {m: [] for m in models}
     print(f"{'policy':18s} {'eps':>4s} {'rig':>14s} " + " ".join(f"{m:>18s}" for m in models))
     for name, paths in recordings.items():
         checkpoint, was_seen = pool[name]
-        agent, env, _ = load_policy(checkpoint, device)
+        agent, env, cfg = load_policy(checkpoint, device)
         groups = []  # (episodes, greedy) per recording
         for recording in paths:
             frames = Path(recording) / "frames.arrows"
@@ -93,18 +103,40 @@ def evaluate(args):
             row.append(v)
         names.append(name)
         seen.append(was_seen)
+        counts.append(len(eps))
+        trained_in.append(Path(cfg["world_model"]).parent.name)
         real.append(scores.mean())
         sem.append(scores.std(ddof=1) / len(scores) ** 0.5 if len(scores) > 1 else float("nan"))
         print(f"{name:18s} {len(eps):4d} {real[-1]:+7.2f} ± {sem[-1]:.2f} " + " ".join(f"{v:+18.2f}" for v in row),
               flush=True)
-    real, new = np.array(real), ~np.array(seen)
-    print(f"\n{'world model':22s} {'policies':>9s} {'Pearson':>8s} {'Spearman':>9s} {'MMRV':>6s} {'MAE':>6s}")
-    for m in models:
-        p = np.array(predicted[m])
-        for label, keep in (("all", np.ones_like(new)), ("new to the rig", new)):
-            if keep.sum() >= 3:
-                a = agreement(real[keep], p[keep])
-                print(f"{m:22s} {label:>9s} {a['pearson']:8.2f} {a['spearman']:9.2f} {a['mmrv']:6.2f} {a['mae']:6.2f}")
+    s = Scores(names, trained_in, np.array(seen), np.array(counts), np.array(real), np.array(sem),
+               {m: np.array(v) for m, v in predicted.items()})
+    args.scores.parent.mkdir(parents=True, exist_ok=True)
+    write_scores(args.scores, s)
+    print(f"\nscores: {args.scores}")
+    report(s, None)
+
+
+def agreement(args):
+    report(read_scores(args.scores), args.csv)
+
+
+def report(s: Scores, csv_path: Path | None):
+    """Prints each world model's agreements() and exploitation gap, and
+    writes the agreements to `csv_path` if given."""
+    rows = agreements(s)
+    print(f"\n{'world model':22s} {'policies':>9s} {'n':>3s} {'Pearson':>8s} {'Spearman':>9s} {'MMRV':>6s} "
+          f"{'MAE':>6s} {'bias':>6s}")
+    for m in s.predicted:
+        for a in (a for a in rows if a.world_model == m):
+            x = a.metrics
+            print(f"{m:22s} {a.policies:>9s} {a.n:3d} {x['pearson']:8.2f} {x['spearman']:9.2f} "
+                  f"{x['mmrv']:6.2f} {x['mae']:6.2f} {x['bias']:+6.2f}")
+        gap = exploitation_gap(s, m)
+        if gap is not None:
+            print(f"{m:22s} exploitation gap (bias on own - bias on held out): {gap:+.2f}")
+    if csv_path:
+        write_agreements(csv_path, rows)
 
 
 def main():
@@ -112,16 +144,20 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     e = sub.add_parser("export", help="export the pool's policies for the harness")
     e.add_argument("--pool", type=Path, default=POOL)
-    v = sub.add_parser("evaluate", help="score world models' rankings against a rig session")
+    v = sub.add_parser("imagine", help="score the pool on the rig and in world models")
     v.add_argument("manifests", type=Path, nargs="+", help="TSVs collect.sh wrote: policy name, recording")
     v.add_argument("--world-models", type=Path, nargs="+", required=True)
+    v.add_argument("--scores", type=Path, required=True, help="the CSV to write the scores to")
     v.add_argument("--pool", type=Path, default=POOL)
     v.add_argument("--seconds", type=float, default=10.0)
     v.add_argument("--rollouts", type=int, default=8, help="per episode start")
     v.add_argument("--seed", type=int, default=0)
     v.add_argument("--device", default="auto")
+    a = sub.add_parser("agreement", help="score world models' rankings from imagine's scores")
+    a.add_argument("scores", type=Path)
+    a.add_argument("--csv", type=Path, help="also write the table here")
     args = parser.parse_args()
-    {"export": export, "evaluate": evaluate}[args.command](args)
+    {"export": export, "imagine": imagine, "agreement": agreement}[args.command](args)
 
 
 if __name__ == "__main__":

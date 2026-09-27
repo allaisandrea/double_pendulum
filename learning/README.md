@@ -15,7 +15,11 @@ directory.
   simulator, and compares world models' predictions with the rig.
 - `cloud/`: runs training jobs on EC2 GPU instances.
 - `docs/world_model_experiments.md`: the world model experiments so far
-  (profiling, scaling, rollout training, closed-loop fidelity).
+  (profiling, scaling, rollout training, closed-loop fidelity, policy
+  ranking). Its figures are drawn by `docs/figures.py` from the CSVs in
+  `docs/results`, which `docs/results.py` regenerates from W&B, the
+  profiling logs and the rig recordings:
+  `uv run python -m docs.results && uv run --group docs python docs/figures.py`.
 
 Library modules end in `_lib`, and each has its tests next to it in
 `<module>_test.py`. A package's run configs are in its `configs/`.
@@ -108,9 +112,10 @@ uv run python -m world_model.compare runs/world_model/wm3/model.pt runs/world_mo
   skipping finished runs and resuming unfinished ones; `sweeps/` holds the
   batch, rollout and follow-up sweeps.
 - `profile` times training steps across widths, depths, batch sizes and
-  variants (plain, compile, bf16) on the real data.
+  variants (plain, compile, bf16) on the real data; `--csv` also writes them.
 - `report` tabulates the final metrics of every W&B run with a name
-  prefix, on each validation set and its upright subset.
+  prefix, on each validation set and its upright subset; `--csv` also
+  writes them, with each run's training settings.
 - `compare` evaluates several checkpoints on the same fixed windows of any
   recordings, so models trained on different data compare like for like.
 
@@ -251,7 +256,8 @@ uv run python -m imagination.export runs/policy/ppo-k8/policy.pt
   tested greedily on the rig (ppo-persistent, ppo-speed, ppo-wm2,
   ppo-wm3) with their recordings: the mean sum of cosines over the first
   10 s from hanging, per policy, and per world model the mean error, the
-  correlation, and whether it ranks them as the rig does.
+  correlation, and whether it ranks them as the rig does; `--csv` also
+  writes the table.
 - `video` draws a closed-loop rollout from hanging: three equal arms
   chained from the pivot, each at its tag's yaw, turned right side up, an
   arm faded in frames where its tag was dropped as unseen, and the action
@@ -366,22 +372,32 @@ the rig does (after SIMPLER, arXiv:2405.05941). The pool,
 uv run python -m imagination.ranking export                # the pool, as runs/ranking/<name>.json
 learning/imagination/ranking/collect.sh 120 0              # from the repository root, at the rig
 learning/imagination/ranking/collect.sh 120 1              # a second pass, in another order
-uv run python -m imagination.ranking evaluate ../recordings/ranking-*-seed0.tsv ../recordings/ranking-*-seed1.tsv \
-    --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt
+uv run python -m imagination.ranking imagine ../recordings/ranking-*-seed0.tsv ../recordings/ranking-*-seed1.tsv \
+    --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt \
+    --scores runs/ranking/scores.csv
+uv run python -m imagination.ranking agreement runs/ranking/scores.csv   # the metrics again, no rollouts
 ```
 
 `collect.sh` runs each policy greedily for 2 minutes, driving 10 s and
 resting 5 s, in a seeded random order, about 30 minutes a pass; two
 passes in different orders average out drift over a session; `kill -INT
-$(cat recordings/ranking.pid)` stops it. `evaluate` takes any number of manifests, pools
-each policy's recordings, splits them into their drives after a rest
-(7 per 2 minutes), scores each on the rig
-(mean sum of cosines over its first 10 s) and in each world model, from
-rollouts started at the same recorded frames, greedy or sampled as the
-recording was. It prints each policy's rig score with its standard error
-and the predictions, then per world model the Pearson and Spearman
-correlations, the mean maximum rank violation (MMRV) and the mean
-absolute error, over all policies and over those new to the rig.
+$(cat recordings/ranking.pid)` stops it. `imagine` takes any number of
+manifests, pools each policy's recordings, splits them into their drives
+after a rest (7 per 2 minutes), scores each on the rig (mean sum of
+cosines over its first 10 s) and in each world model, from rollouts
+started at the same recorded frames, greedy or sampled as the recording
+was. It prints each policy's rig score with its standard error and the
+predictions, and writes them, with the world model each policy trained
+in, to `--scores`. This is the slow part: about 40 s per world model for
+13 policies on the Mac.
+
+`agreement` reads those scores and prints, per world model, the Pearson
+and Spearman correlations, the mean maximum rank violation (MMRV), the
+mean absolute error and the bias (mean overrating), over all policies,
+those new to the rig and, for a world model some policies were trained
+in, the others (held out) and those (own), with its exploitation gap: how
+much more it overrates its own policies than the others. `imagine` ends
+by printing the same; `--csv` also writes the table.
 
 ## Training in the cloud
 

@@ -8,9 +8,11 @@ samples per second, and how much of a step gathering the batch takes,
 in each of --variants: plain, compile (torch.compile), bf16 (autocasting
 to bfloat16, on CUDA only), or compile+bf16. Then the time of one
 evaluation of one validation set as world_model.train runs it. Times are
-measured with the device synchronised.
+measured with the device synchronised. --csv also writes the training
+step times, one row per model, batch size and variant.
 """
 import argparse
+import csv
 import time
 import tomllib
 from pathlib import Path
@@ -43,8 +45,11 @@ def main():
     parser.add_argument("--variants", nargs="+", default=["plain"],
                         choices=["plain", "compile", "bf16", "compile+bf16"])
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--csv", type=Path, help="also write the step times here")
     args = parser.parse_args()
     device = pick_device(args.device)
+    device_name = torch.cuda.get_device_name() if device.type == "cuda" else device.type
+    rows = []
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
     w = cfg["window"]
@@ -81,6 +86,10 @@ def main():
                 params = sum(p.numel() for p in model.parameters())
                 print(f"{width:6d} {depth:6d} {batch_size:7d} {params:9d} {variant:>13} "
                       f"{t_step * 1e3:9.2f} {batch_size / t_step / 1e3:12.1f} {t_gather / t_step:7.0%}", flush=True)
+                rows.append([device_name, width, depth, batch_size, params, variant,
+                             round(t_step * 1e3, 3), round(t_gather / t_step, 3)])
+    if args.csv:
+        write_csv(args.csv, rows)
 
     val_name, val_names = next(iter(cfg["val"].items()))
     horizon = max(cfg["horizons"])
@@ -89,6 +98,34 @@ def main():
     model = WorldModel(w, args.widths[0], args.depths[0], 0.05).to(device)
     t_eval = timed(device, lambda: evaluate(model, windows, index, cfg["horizons"]), 3)
     print(f"one evaluation of {val_name} ({len(index)} windows, {horizon} frames, width {args.widths[0]}): {t_eval:.2f} s")
+
+
+CSV_HEADER = ["device", "width", "depth", "batch", "parameters", "variant", "ms_per_step", "gather_share"]
+
+
+def write_csv(path: Path, rows):
+    with open(path, "w", newline="") as f:
+        out = csv.writer(f)
+        out.writerow(CSV_HEADER)
+        out.writerows(rows)
+
+
+def parse_log(text: str) -> list[list]:
+    """The step times in a log of this script's output (a cloud job's, say),
+    as --csv rows; the device is the GPU named on a line of the form
+    "NVIDIA L4, 23034 MiB" that nvidia-smi prints, or the one it ran on."""
+    device, rows = None, []
+    for line in text.splitlines():
+        f = line.split()
+        if line.endswith(" MiB") and "," in line and device is None:
+            device = line.split(",")[0]
+        elif f and f[0].endswith(":") and "training windows" in line and device is None:
+            device = f[0].rstrip(":")
+        elif len(f) == 8 and f[0].isdigit() and f[-1].endswith("%"):
+            width, depth, batch, params, variant, ms, _, gather = f
+            rows.append([device, int(width), int(depth), int(batch), int(params), variant, float(ms),
+                         int(gather.rstrip("%")) / 100])
+    return rows
 
 
 if __name__ == "__main__":
