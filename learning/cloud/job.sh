@@ -7,8 +7,9 @@
 #
 # S3_ROOT holds data/, runs/ and code/ (s3://allais-andrea-store/double_pendulum).
 # KIND is world_model or policy, trained with CONFIG and ARGS as
-# world_model.train or imagination.train would be; or bench, which times
-# 100 policy iterations and 5000 world model steps without W&B.
+# world_model.train or imagination.train would be; bench, which times 100
+# policy iterations and 5000 world model steps without W&B; or run, which
+# runs the module CONFIG names with ARGS (python -m CONFIG ARGS).
 #
 # The run directory and this job's log go to S3_ROOT/runs/KIND/NAME every
 # 5 minutes and at the end, with job_status holding the exit status. A
@@ -50,7 +51,7 @@ export PATH=$HOME/.local/bin:$PATH
 uv sync -q || exit 1
 aws s3 sync "$S3_ROOT/data" data --only-show-errors || exit 1
 
-if [ "$KIND" != bench ]; then
+if [ "$KIND" = world_model ] || [ "$KIND" = policy ]; then
     WANDB_API_KEY=$(aws secretsmanager get-secret-value --secret-id double_pendulum/wandb_api_key \
         --query SecretString --output text) || exit 1
     export WANDB_API_KEY
@@ -91,6 +92,9 @@ print('policy seconds per phase over 100 iterations:', {k: round(v, 1) for k, v 
             rm -rf "$RUN_DIR"
             uv run python -m imagination.train "$CONFIG" --name "$NAME" "${ARGS[@]}"
         fi
+        ;;
+    run)
+        uv run python -m "$CONFIG" "${ARGS[@]}"
         ;;
     *)
         echo "unknown kind $KIND"
