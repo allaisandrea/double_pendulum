@@ -1,13 +1,14 @@
 """Times world model training steps and evaluation on the real data.
 
     uv run python -m world_model.profile
-    uv run python -m world_model.profile --widths 256 1024 --depths 3 5 --batches 1024 8192 --compile
+    uv run python -m world_model.profile --widths 256 1024 --depths 3 5 --batches 1024 8192 --variants plain compile+bf16
 
 For each width, depth and batch size: milliseconds per training step,
-samples per second, and how much of a step gathering the batch takes;
-then the time of one evaluation of one validation set as world_model.train
-runs it. --compile adds torch.compile, --bf16 autocasting to bfloat16 on
-CUDA. Times are measured with the device synchronised.
+samples per second, and how much of a step gathering the batch takes,
+in each of --variants: plain, compile (torch.compile), bf16 (autocasting
+to bfloat16, on CUDA only), or compile+bf16. Then the time of one
+evaluation of one validation set as world_model.train runs it. Times are
+measured with the device synchronised.
 """
 import argparse
 import time
@@ -39,8 +40,8 @@ def main():
     parser.add_argument("--depths", type=int, nargs="+", default=[3])
     parser.add_argument("--batches", type=int, nargs="+", default=[1024])
     parser.add_argument("--steps", type=int, default=100)
-    parser.add_argument("--compile", action="store_true")
-    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--variants", nargs="+", default=["plain"],
+                        choices=["plain", "compile", "bf16", "compile+bf16"])
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
     device = pick_device(args.device)
@@ -51,20 +52,21 @@ def main():
     train = Windows(recs, w + 1, device)
     g = torch.Generator().manual_seed(0)
     print(f"{device}: {len(train)} training windows")
-    print(f"{'width':>6} {'depth':>6} {'batch':>7} {'params':>9} {'compile':>8} {'ms/step':>9} {'k samples/s':>12} {'gather':>7}")
-    for width in args.widths:
+    print(f"{'width':>6} {'depth':>6} {'batch':>7} {'params':>9} {'variant':>13} {'ms/step':>9} {'k samples/s':>12} {'gather':>7}")
+    for variant, width in ((v, wd) for v in args.variants for wd in args.widths):
+        compile_, bf16 = "compile" in variant, "bf16" in variant
         for depth in args.depths:
             for batch_size in args.batches:
                 model = WorldModel(w, width, depth, 0.05).to(device)
                 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-                forward = torch.compile(model) if args.compile else model
+                forward = torch.compile(model) if compile_ else model
 
                 def gather():
                     return train.gather(train.sample(batch_size, g))
 
                 def step():
                     b = gather()
-                    with torch.autocast("cuda", torch.bfloat16, enabled=args.bf16 and device.type == "cuda"):
+                    with torch.autocast("cuda", torch.bfloat16, enabled=bf16 and device.type == "cuda"):
                         mse, bce = losses(forward, b.obs[:, :w], b.present[:, :w], b.action[:, :w],
                                           b.obs[:, w], b.present[:, w])
                         loss = mse + 0.1 * bce
@@ -77,7 +79,7 @@ def main():
                 t_step = timed(device, step, args.steps)
                 t_gather = timed(device, gather, args.steps)
                 params = sum(p.numel() for p in model.parameters())
-                print(f"{width:6d} {depth:6d} {batch_size:7d} {params:9d} {str(args.compile):>8} "
+                print(f"{width:6d} {depth:6d} {batch_size:7d} {params:9d} {variant:>13} "
                       f"{t_step * 1e3:9.2f} {batch_size / t_step / 1e3:12.1f} {t_gather / t_step:7.0%}", flush=True)
 
     val_name, val_names = next(iter(cfg["val"].items()))
