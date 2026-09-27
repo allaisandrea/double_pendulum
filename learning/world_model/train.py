@@ -45,6 +45,8 @@ from world_model.evaluation_lib import evaluate
 from world_model.model_lib import WorldModel, last_seen, losses
 
 UPRIGHT_COS = math.cos(math.radians(30))
+# Config keys a run understands without the config file having them.
+OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -122,7 +124,7 @@ def main(argv=None):
             cfg["steps"] = args.steps
         for item in args.set:
             key, sep, value = item.partition("=")
-            if not sep or key not in cfg:
+            if not sep or (key not in cfg and key not in OPTIONAL):
                 raise SystemExit(f"--set {item}: not KEY=VALUE for a key in the config")
             cfg[key] = tomllib.loads(f"v = {value}")["v"]
     start = ck["step"] if ck else 0

@@ -95,7 +95,7 @@ def main():
     extra = argv[argv.index("--") + 1 :] if "--" in argv else []
     argv = argv[: argv.index("--")] if "--" in argv else argv
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("kind", choices=["world_model", "policy", "bench", "run"])
+    parser.add_argument("kind", choices=["world_model", "policy", "bench", "run", "scale"])
     parser.add_argument("name")
     parser.add_argument("config", nargs="?", default="-", help="relative to learning/, or for run a module; not for bench")
     parser.add_argument("--instance", default="g6.xlarge,g5.xlarge,g4dn.xlarge",

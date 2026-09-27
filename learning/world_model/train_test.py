@@ -85,3 +85,24 @@ def test_set_overrides_and_unknown_keys_are_refused(workdir):
     assert torch.load(workdir / "runs/world_model/wide/model.pt", weights_only=False)["config"]["hidden"] == 12
     with pytest.raises(SystemExit):
         main(["base.toml", "--name", "bad", "--set", "nope=1", *COMMON])
+
+
+def test_scale_trains_the_long_run_then_its_branches_and_carries_on_after_interruptions(workdir):
+    from world_model.scale import main as scale
+
+    args = ["base.toml", "--name", "s", "--steps", "10", "--branches", "5", "10", "--cooldown-fraction", "0.4",
+            "--wandb", "disabled", "--device", "cpu", "--", "--set", "checkpoint_every=0"]
+    scale(args)
+    runs = workdir / "runs" / "world_model"
+    assert sorted(p.name for p in (runs / "s" / "checkpoints").iterdir()) == ["step_0000005.pt", "step_0000010.pt"]
+    # Each branch cools down over 0.4 of its point's length.
+    assert (runs / "s-cd5" / "checkpoints" / "step_0000007.pt").exists()
+    assert (runs / "s-cd10" / "checkpoints" / "step_0000014.pt").exists()
+    assert torch.load(runs / "s-cd10" / "model.pt", weights_only=False)["config"]["branch_of"] == {"run": "s", "step": 10}
+
+    # An interrupted branch is resumed; a finished one is left alone.
+    (runs / "s-cd10" / "checkpoints" / "step_0000014.pt").unlink()
+    finished = (runs / "s-cd5" / "model.pt").stat().st_mtime
+    scale(args)
+    assert (runs / "s-cd10" / "checkpoints" / "step_0000014.pt").exists()
+    assert (runs / "s-cd5" / "model.pt").stat().st_mtime == finished
