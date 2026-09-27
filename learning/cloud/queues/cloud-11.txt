@@ -1,0 +1,2 @@
+# A policy in the stochastic world model (stoch-b05), each frame drawn from it.
+policy ppo-stoch imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000
