@@ -1,0 +1,1 @@
+world_model/configs/base.toml --name rollout2-k16-100k --steps 100000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set rollout_train=16

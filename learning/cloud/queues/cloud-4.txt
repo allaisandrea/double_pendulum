@@ -1,0 +1,9 @@
+# Phase 4b first (one resumable sweep job per run), then the rest of phase 1.
+sweep rollout2-k16-100k world_model/sweeps/rollout2/rollout2-k16-100k.txt
+sweep rollout2-k16-w1024 world_model/sweeps/rollout2/rollout2-k16-w1024.txt
+sweep rollout2-k32 world_model/sweeps/rollout2/rollout2-k32.txt
+sweep rollout2-k64 world_model/sweeps/rollout2/rollout2-k64.txt
+scale wm-w2048-d5 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=2048 --set layers=5
+scale wm-w2048-d3 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=2048 --set layers=3
+scale wm-w1024-d5 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=1024 --set layers=5
+scale wm-w1024-d3 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=1024 --set layers=3
