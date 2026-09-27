@@ -1,0 +1,71 @@
+# As wm-k8.toml, in the one-step 512 × 3 world model, which ranked 13
+# policies on the rig best (MMRV 0.02, Spearman 0.99).
+# The world model checkpoint, and the recordings whose windows start episodes.
+world_model = "runs/world_model/rollout-k1/model.pt"
+data_dir = "data"
+# The random-walk recordings and the collections with trained policies
+# (ppo-speed, ppo-wm2, ppo-wm3); their 5-minute validation recordings are
+# left out.
+recordings = ["1790282998", "1790279628", "1790281442", "1790372784", "1790378922", "1790464876"]
+
+# 9 actions 16 apart: -64 ... 64, just past the ±60 the world model has seen.
+action_step = 16
+action_bins = 9
+# Frames the policy sees, each with the action before it.
+policy_window = 16
+# Drop tags from imagined frames as often as the world model predicts.
+sample_missing = true
+# Each arm turning faster than its limit, in revolutions per second, costs
+# speed_penalty times the square of the excess, per frame. The limits sit a
+# little under the random walk's 90th percentiles (2.3, 2.7 and 6.8 rev/s),
+# the speeds the world model has data for; the first arm's matches the
+# harness's governor.
+speed_limits_rev_s = [2.0, 2.5, 6.5]
+speed_penalty = 1.0
+
+hidden = 256
+layers = 2
+
+# The share of episode starts drawn from windows whose last frame has every
+# arm within 30° of upright; the rest are drawn uniformly.
+upright_start_fraction = 0.0
+
+# num_envs environments carry on across iterations. Each iteration runs
+# them for rollout_steps frames (8 ms each), then takes update_epochs passes
+# over them in minibatches. After each frame an environment starts again
+# from a recorded window with probability (1 - gamma) / reset_horizons:
+# episodes last reset_horizons / (1 - gamma) frames on average, 400 (3.2 s)
+# here.
+num_envs = 4096
+rollout_steps = 64
+reset_horizons = 2
+# At lr 1e-3, policies found the balancing solution between iterations
+# 1000 and 1400; 2000 reaches what 5000 did at 3e-4, in an hour.
+iterations = 2000
+update_epochs = 4
+minibatches = 8
+
+# The learning rate follows the trapezoid, counted in iterations.
+lr = 1e-3
+warmup_iterations = 10
+cooldown_fraction = 0.2
+
+# 0.995 looks about 200 frames (1.6 s) ahead.
+gamma = 0.995
+gae_lambda = 0.95
+clip = 0.2
+ent_coef = 0.01
+vf_coef = 0.5
+max_grad_norm = 0.5
+seed = 0
+
+eval_every = 25
+# Each evaluation is one greedy rollout of eval_steps frames (10 s) from the
+# pendulum hanging still, with its tag misses seeded by eval_seed.
+eval_steps = 1250
+eval_seed = 0
+
+# Every checkpoint_every iterations, the whole training state is saved.
+checkpoint_every = 50
+
+wandb_project = "double-pendulum-imagination"

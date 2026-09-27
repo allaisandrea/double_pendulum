@@ -1,0 +1,5 @@
+# Policies in the world models that ranked policies best: two seeds in the
+# one-step 512 x 3 model, one in the 6-frame rollout model.
+policy ppo-k1 imagination/configs/wm-k1.toml -- --iterations 5000
+policy ppo-k1-seed1 imagination/configs/wm-k1.toml -- --iterations 5000 --set seed=1
+policy ppo-k6 imagination/configs/wm-k6.toml -- --iterations 5000
