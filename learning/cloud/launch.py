@@ -67,22 +67,27 @@ exec bash learning/cloud/job.sh {S3_ROOT} {quoted}
 ZONE_ERRORS = ("InsufficientInstanceCapacity", "Unsupported", "SpotMaxPriceTooLow", "InsufficientCapacity")
 
 
-def launch_in_some_zone(run: list[str], profile: str) -> str:
-    """Runs `run` in each public subnet in turn, until one has capacity.
-    The account has no default VPC; its VPC's subnets give public IPs, and
-    its default security group lets the instance reach the internet."""
+def launch_somewhere(run: list[str], types: list[str], profile: str) -> tuple[str, str]:
+    """Runs `run` with each instance type in turn, in each public subnet in
+    turn, until one starts; returns the instance and its type. The account
+    has no default VPC; its VPC's subnets give public IPs, and its default
+    security group lets the instance reach the internet."""
     subnets = aws("ec2", "describe-subnets", "--filters", "Name=map-public-ip-on-launch,Values=true",
                   "--query", "Subnets[].[SubnetId,AvailabilityZone]", "--output", "text", profile=profile)
     tried = []
-    for line in subnets.splitlines():
-        subnet, zone = line.split()
-        out = subprocess.run(["aws", "--profile", profile, *run, "--subnet-id", subnet], capture_output=True, text=True)
-        if out.returncode == 0:
-            return out.stdout.strip()
-        tried.append(f"{zone}: {out.stderr.strip()}")
-        if not any(e in out.stderr for e in ZONE_ERRORS):
-            break
-    raise SystemExit("could not start the instance:\n  " + "\n  ".join(tried))
+    for instance_type in types:
+        for line in subnets.splitlines():
+            subnet, zone = line.split()
+            out = subprocess.run(
+                ["aws", "--profile", profile, *run, "--instance-type", instance_type, "--subnet-id", subnet],
+                capture_output=True, text=True,
+            )
+            if out.returncode == 0:
+                return out.stdout.strip(), instance_type
+            tried.append(f"{instance_type} in {zone}: {out.stderr.strip()[:160]}")
+            if not any(e in out.stderr for e in ZONE_ERRORS):
+                raise SystemExit("could not start the instance:\n  " + "\n  ".join(tried))
+    raise SystemExit("no capacity for any of the instance types:\n  " + "\n  ".join(tried))
 
 
 def main():
@@ -93,7 +98,8 @@ def main():
     parser.add_argument("kind", choices=["world_model", "policy", "bench", "run"])
     parser.add_argument("name")
     parser.add_argument("config", nargs="?", default="-", help="relative to learning/, or for run a module; not for bench")
-    parser.add_argument("--instance", default="g6.xlarge")
+    parser.add_argument("--instance", default="g6.xlarge,g5.xlarge,g4dn.xlarge",
+                        help="instance types to try in turn, comma-separated")
     parser.add_argument("--on-demand", action="store_true")
     parser.add_argument("--follow", action="store_true", help="print the job's log until it ends")
     parser.add_argument("--max-hours", type=float, default=12, help="terminate the instance after this, however the job goes")
@@ -107,7 +113,6 @@ def main():
     run = [
         "ec2", "run-instances",
         "--image-id", ami,
-        "--instance-type", args.instance,
         "--iam-instance-profile", f"Name={ROLE}",
         "--instance-initiated-shutdown-behavior", "terminate",
         # The CLI base64-encodes the user data itself.
@@ -121,9 +126,9 @@ def main():
         run += ["--instance-market-options", json.dumps(
             {"MarketType": "spot", "SpotOptions": {"SpotInstanceType": "one-time", "InstanceInterruptionBehavior": "terminate"}}
         )]
-    instance = launch_in_some_zone(run, args.profile)
+    instance, instance_type = launch_somewhere(run, args.instance.split(","), args.profile)
     run_uri = f"{S3_ROOT}/runs/{args.kind}/{args.name}"
-    print(f"{instance}: {args.kind} {args.name} on {'on-demand' if args.on_demand else 'spot'} {args.instance}; "
+    print(f"{instance}: {args.kind} {args.name} on {'on-demand' if args.on_demand else 'spot'} {instance_type}; "
           f"its run and log go to {run_uri}")
     if args.follow:
         follow(instance, run_uri, args.profile)
