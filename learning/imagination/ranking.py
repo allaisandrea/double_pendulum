@@ -70,6 +70,15 @@ def export(args):
         print(f"{out}: from {checkpoint}")
 
 
+def world_model_spec(spec: str, tau: float) -> tuple[str, Path, float]:
+    """A --world-models entry, PATH or PATH@TAU: its column name (the run's
+    directory, with @TAU if given), its checkpoint and its tau."""
+    path, at, value = spec.rpartition("@")
+    if at and path.endswith(".pt"):
+        return f"{Path(path).parent.name}@{value}", Path(path), float(value)
+    return Path(spec).parent.name, Path(spec), tau
+
+
 def imagine(args):
     device = pick_device(args.device)
     pool = read_pool(args.pool)
@@ -80,7 +89,9 @@ def imagine(args):
             if line.strip():
                 name, recording = line.split("\t")
                 recordings.setdefault(name, []).append(recording)
-    models = {p.parent.name: load_world_model(p, device) for p in args.world_models}
+    specs = [world_model_spec(w, args.tau) for w in args.world_models]
+    models = {name: load_world_model(path, device) for name, path, _ in specs}
+    taus = {name: tau for name, _, tau in specs}
     names, seen, counts, trained_in, real, sem, predicted = [], [], [], [], [], [], {m: [] for m in models}
     print(f"{'policy':18s} {'eps':>4s} {'rig':>14s} " + " ".join(f"{m:>18s}" for m in models))
     for name, paths in recordings.items():
@@ -93,9 +104,8 @@ def imagine(args):
         eps = [e for group, _ in groups for e in group]
         scores = np.array([e.real for e in eps])
         row = []
-        env.tau = args.tau
         for m, model in models.items():
-            env.model = model
+            env.model, env.tau = model, taus[m]
             # Each recording's starts, weighted by how many episodes it has.
             parts = [(imagined(agent, env, [e.start for e in group], args.seconds, args.rollouts, args.seed, greedy), len(group))
                      for group, greedy in groups if group]
@@ -147,14 +157,15 @@ def main():
     e.add_argument("--pool", type=Path, default=POOL)
     v = sub.add_parser("imagine", help="score the pool on the rig and in world models")
     v.add_argument("manifests", type=Path, nargs="+", help="TSVs collect.sh wrote: policy name, recording")
-    v.add_argument("--world-models", type=Path, nargs="+", required=True)
+    v.add_argument("--world-models", nargs="+", required=True,
+                   help="checkpoints, each PATH or PATH@TAU for a stochastic model's own tau")
     v.add_argument("--scores", type=Path, required=True, help="the CSV to write the scores to")
     v.add_argument("--pool", type=Path, default=POOL)
     v.add_argument("--seconds", type=float, default=10.0)
     v.add_argument("--rollouts", type=int, default=8, help="per episode start")
     v.add_argument("--seed", type=int, default=0)
     v.add_argument("--tau", type=float, default=1.0,
-                   help="the spread of stochastic world models' frames (0: their mean)")
+                   help="the spread of stochastic world models' frames (0: their mean), where PATH@TAU does not say")
     v.add_argument("--device", default="auto")
     a = sub.add_parser("agreement", help="score world models' rankings from imagine's scores")
     a.add_argument("scores", type=Path)

@@ -68,3 +68,18 @@ def test_a_deterministic_model_ignores_tau():
     obs = torch.nn.functional.normalize(torch.randn(2, 4, 3, 2), dim=-1)
     present, action = torch.ones(2, 4, 3, dtype=torch.bool), torch.zeros(2, 4)
     assert torch.equal(model.predict(obs, present, action)[0], model.predict(obs, present, action, tau=1.0)[0])
+
+
+def test_ensemble_metrics_score_a_stochastic_models_sampled_rollouts():
+    from common.data_lib import Batch
+    from world_model.evaluation_lib import ensemble_metrics
+    from world_model.model_lib import WorldModel
+
+    torch.manual_seed(0)
+    model = WorldModel(4, 8, 1, 0.1, stochastic=True)
+    obs = torch.nn.functional.normalize(torch.randn(32, 8, 3, 2), dim=-1)
+    batch = Batch(obs, torch.ones(32, 8, 3, dtype=torch.bool), torch.zeros(32, 8))
+    m = ensemble_metrics(model, batch, [1, 4], members=6)
+    assert set(m) == {f"ensemble/{k}/h{h:03d}" for k in ("one_minus_r2", "crps", "spread_skill") for h in (1, 4)}
+    assert all(v == v and v > 0 for v in m.values())
+    assert m == ensemble_metrics(model, batch, [1, 4], members=6)

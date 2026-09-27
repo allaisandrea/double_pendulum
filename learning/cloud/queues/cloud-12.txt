@@ -1,0 +1,11 @@
+# Experiments to improve the policy in the stochastic world model
+# (stoch-b05), against ppo-stoch (+1.81 on the rig, 5000 iterations, lr
+# 1e-3). Each is evaluated on 16 sampled rollouts; the longest first.
+policy ppo-stoch-20k imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 20000 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-10k imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 10000 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-lr3e4-10k imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 10000 --set lr=3e-4 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-seed1 imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set seed=1 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-tau15 imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set tau=1.5 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-gamma998 imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set gamma=0.998 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-hidden512 imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set hidden=512 --set eval_rollouts=16 --set eval_every=50
+policy ppo-stoch-upright25 imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set upright_start_fraction=0.25 --set eval_rollouts=16 --set eval_every=50

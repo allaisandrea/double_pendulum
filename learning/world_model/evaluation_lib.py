@@ -21,21 +21,57 @@ from world_model.model_lib import WorldModel, last_seen, losses
 
 
 @torch.no_grad()
-def rollout(model: WorldModel, batch: Batch, horizon: int):
+def rollout(model: WorldModel, batch: Batch, horizon: int, tau: float = 0.0,
+            generator: torch.Generator | None = None):
     """Predicted observations [B, horizon, NUM_TAGS, 2], and the starting
-    window's references [B, NUM_TAGS, 2] and whether each tag had one."""
+    window's references [B, NUM_TAGS, 2] and whether each tag had one. A
+    stochastic model follows its mean, or with `tau` draws each frame."""
     w = model.window
     obs, present = batch.obs[:, :w], batch.present[:, :w]
     ref, has_ref = last_seen(obs, present)
     seen = torch.ones_like(present[:, 0])
     preds = []
     for h in range(horizon):
-        nxt, _, _, _ = model.predict(obs, present, batch.action[:, h : h + w])
+        nxt, _, _, _ = model.predict(obs, present, batch.action[:, h : h + w], tau, generator)
         nxt = F.normalize(nxt, dim=-1)
         preds.append(nxt)
         obs = torch.cat([obs[:, 1:], nxt[:, None]], dim=1)
         present = torch.cat([present[:, 1:], seen[:, None]], dim=1)
     return torch.stack(preds, dim=1), ref, has_ref
+
+
+def ensemble_metrics(model: WorldModel, batch: Batch, horizons: list[int], members: int, seed: int = 0) -> dict:
+    """A stochastic model's rollouts as an ensemble: `members` sampled
+    rollouts from each window (tau 1), scored at each horizon on the change
+    since each tag was last seen, over the tags seen:
+
+    - ensemble/one_minus_r2: 1 - R² of the ensemble's mean;
+    - ensemble/crps: the continuous ranked probability score of the
+      ensemble, per element, over copying the last frame's (its mean
+      absolute error): 1 is no better than copying, 0 is perfect. A proper
+      score, it rewards spread only where the future is uncertain;
+    - ensemble/spread_skill: the ensemble's spread over the error of its
+      mean, corrected for its size; 1 if calibrated, below 1 overconfident.
+    """
+    w = model.window
+    repeat = lambda t: t.repeat_interleave(members, 0)
+    big = Batch(repeat(batch.obs), repeat(batch.present), repeat(batch.action))
+    preds, ref, has_ref = rollout(model, big, max(horizons), 1.0, torch.Generator().manual_seed(seed))
+    b = batch.obs.shape[0]
+    preds = preds.reshape(b, members, *preds.shape[1:])  # [B, M, H, T, 2]
+    ref, has_ref = ref[::members], has_ref[::members]
+    out = {}
+    for h in horizons:
+        mask = batch.present[:, w + h - 1] & has_ref
+        y = (batch.obs[:, w + h - 1] - ref)[mask]  # [N, 2]
+        x = (preds[:, :, h - 1] - ref[:, None]).permute(0, 2, 1, 3)[mask]  # [N, M, 2]
+        mean = x.mean(1)
+        crps = (x - y[:, None]).abs().mean(1) - 0.5 * (x[:, :, None] - x[:, None]).abs().mean((1, 2))
+        spread = x.var(1, unbiased=True).mean().sqrt() * ((members + 1) / members) ** 0.5
+        out[f"ensemble/one_minus_r2/h{h:03d}"] = one_minus_r2(mean, y, torch.ones(len(y), dtype=torch.bool, device=y.device))
+        out[f"ensemble/crps/h{h:03d}"] = (crps.mean() / y.abs().mean()).item()
+        out[f"ensemble/spread_skill/h{h:03d}"] = (spread / (mean - y).pow(2).mean().sqrt()).item()
+    return out
 
 
 def one_minus_r2(pred_change, change, mask) -> float:
@@ -64,9 +100,10 @@ def calibration(model: WorldModel, batch: Batch) -> dict:
 
 
 @torch.no_grad()
-def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int]) -> dict:
+def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int], members: int = 0) -> dict:
     """Metrics on the windows at `index`, which hold `window + max(horizons)`
-    steps each."""
+    steps each; for a stochastic model with `members`, also its
+    ensemble_metrics."""
     model.eval()
     w, horizon = model.window, max(horizons)
     batch = windows.gather(index)
@@ -88,6 +125,8 @@ def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int]) ->
     if model.stochastic:
         metrics |= calibration(model, batch)
         metrics["nll"] = fit.item()
+        if members:
+            metrics |= ensemble_metrics(model, batch, horizons, members)
     for h in horizons:
         metrics[f"one_minus_r2/h{h:03d}"] = one_minus_r2(
             pred_change[:, h - 1], change[:, h - 1], mask[:, h - 1]

@@ -81,3 +81,13 @@ def test_agreements_cover_the_subsets_of_three_or_more_and_the_gap_the_own_polic
     assert rows["k8", "own"].n == 3 and rows["k8", "own"].metrics["bias"] == pytest.approx(1.0)
     assert exploitation_gap(s, "k8") == pytest.approx(1.0 - 0.0)
     assert exploitation_gap(s, "k1") is None
+
+
+def test_a_world_model_spec_may_carry_its_own_tau():
+    from pathlib import Path
+
+    from imagination.ranking import world_model_spec
+
+    assert world_model_spec("runs/world_model/stoch-b05/model.pt@0", 1.0) == (
+        "stoch-b05@0", Path("runs/world_model/stoch-b05/model.pt"), 0.0)
+    assert world_model_spec("runs/world_model/wm3/model.pt", 1.0) == ("wm3", Path("runs/world_model/wm3/model.pt"), 1.0)

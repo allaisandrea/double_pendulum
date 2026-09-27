@@ -19,7 +19,10 @@ the state the episode would have gone on to. Rewards are scaled by
 Every `eval_every` iterations the policy is evaluated: one rollout of
 `eval_steps` frames from the pendulum hanging still, acting greedily. Its
 tag misses are drawn from a generator seeded with `eval_seed`, so
-evaluations are repeatable. At the end, a video of the last evaluation's
+evaluations are repeatable. With `eval_rollouts` N above 1, N more
+rollouts from hanging, from the same seed, give `eval/mean/cos_sum` with
+its standard error and `eval/mean/upright`: in a stochastic world model,
+one rollout is one draw. At the end, a video of the last evaluation's
 rollout goes to `runs/policy/<name>/rollout.mp4` and to W&B.
 
 Every `checkpoint_every` iterations, and at the end, the whole training
@@ -44,6 +47,7 @@ from common.run_lib import Timer, git_commit, load_config, pick_device, rng_stat
 from common.schedule_lib import trapezoid_scheduler
 from imagination.agent_lib import Agent
 from imagination.env_lib import ImaginedEnv, Starts, action_levels, upright
+from imagination.evaluate import evaluate_policy
 from imagination.ppo_lib import discounted_returns, gae, ppo_loss
 from imagination.rollout_lib import Rollout, from_hanging, write_rollout_video
 from world_model.model_lib import load_world_model
@@ -60,10 +64,15 @@ def evaluate(agent, env, cfg) -> tuple[dict, Rollout]:
     while the critic values the sampling policy, so some bias is expected.
     """
     gamma = cfg["gamma"]
+    metrics = {}
+    if cfg.get("eval_rollouts", 1) > 1:
+        m = evaluate_policy(agent, env, cfg["eval_rollouts"], cfg["eval_steps"], cfg["eval_seed"])
+        metrics = {"eval/mean/cos_sum": m["cos_sum"], "eval/mean/cos_sum_sem": m["cos_sum_sem"],
+                   "eval/mean/upright": m["upright"]}
     run = from_hanging(agent, env, cfg["eval_steps"], cfg["eval_seed"])
     actual = discounted_returns(run.reward[:, 0] * (1 - gamma), gamma)
     value = run.value[: len(actual), 0]
-    metrics = {
+    metrics |= {
         "eval/reward": run.reward.mean().item(),
         "eval/cos_sum": (run.reward + run.penalty).mean().item(),
         "eval/speed_penalty": run.penalty.mean().item(),
@@ -125,7 +134,7 @@ def main(argv=None):
         if out.exists():
             raise SystemExit(f"{out} exists: pick another --name")
         # tau: the spread of a stochastic world model's frames (default 1).
-        cfg = load_config(args.config, args.set, {"tau"})
+        cfg = load_config(args.config, args.set, {"tau", "eval_rollouts"})
         if args.iterations is not None:
             cfg["iterations"] = args.iterations
     device = pick_device(args.device)
@@ -304,6 +313,8 @@ def main(argv=None):
                 f" eval {metrics['eval/reward']:.3f}"
                 f" (cos sum {metrics['eval/cos_sum']:.3f}, upright {metrics['eval/upright']:.1%},"
                 f" value error {metrics.get('eval/value_error', float('nan')):.3f}),"
+                + (f" mean of {cfg['eval_rollouts']} cos sum {metrics['eval/mean/cos_sum']:.3f},"
+                   if "eval/mean/cos_sum" in metrics else "") +
                 f" entropy {metrics['train/entropy']:.3f},"
                 f" eval {metrics['time/share/eval']:.0%} of the time so far",
                 flush=True,

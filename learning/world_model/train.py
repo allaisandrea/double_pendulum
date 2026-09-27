@@ -46,7 +46,7 @@ from world_model.model_lib import WorldModel, last_seen, rollout_losses
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
-            "stochastic", "nll_beta"}
+            "stochastic", "nll_beta", "eval_ensemble"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -195,13 +195,16 @@ def main(argv=None):
         flush=True,
     )
 
+    # A stochastic model is also scored as an ensemble of sampled rollouts.
+    members = cfg.get("eval_ensemble", 8) if model.stochastic else 0
+
     def evaluate_all(step) -> dict:
         metrics = {}
         for split, windows in eval_sets.items():
-            for k, v in evaluate(model, windows, eval_index[split], cfg["horizons"]).items():
+            for k, v in evaluate(model, windows, eval_index[split], cfg["horizons"], members).items():
                 metrics[f"{split}/{k}"] = v
             if split in upright_index:
-                for k, v in evaluate(model, windows, upright_index[split], cfg["horizons"]).items():
+                for k, v in evaluate(model, windows, upright_index[split], cfg["horizons"], members).items():
                     metrics[f"{split}/upright/{k}"] = v
         shown = [h for h in (16, 64) if h in cfg["horizons"]] or cfg["horizons"][-2:]
         scores = [

@@ -22,3 +22,5 @@ ppo-k1-seed1@2000  runs/policy/ppo-k1-seed1/checkpoints/iter_002000.pt new
 ppo-k1-seed1       runs/policy/ppo-k1-seed1/policy.pt                new
 ppo-k6@1000        runs/policy/ppo-k6/checkpoints/iter_001000.pt     new
 ppo-k6             runs/policy/ppo-k6/policy.pt                      new
+# A policy trained in the stochastic world model (stoch-b05).
+ppo-stoch          runs/policy/ppo-stoch/policy.pt                   new
