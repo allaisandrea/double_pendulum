@@ -1,0 +1,9 @@
+# K = 8 and 12 between the optimistic K = 4 and pessimistic K = 16, then the rest.
+sweep rollout3-k8 world_model/sweeps/rollout3/rollout3-k8.txt
+sweep rollout3-k12 world_model/sweeps/rollout3/rollout3-k12.txt
+sweep rollout3-k32-clip world_model/sweeps/rollout3/rollout3-k32-clip.txt
+sweep rollout3-k64-clip world_model/sweeps/rollout3/rollout3-k64-clip.txt
+scale wm-w2048-d5 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=2048 --set layers=5
+scale wm-w2048-d3 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=2048 --set layers=3
+scale wm-w1024-d5 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=1024 --set layers=5
+scale wm-w1024-d3 world_model/configs/base.toml -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=5000 --set checkpoint_every=25000 --set hidden=1024 --set layers=3
