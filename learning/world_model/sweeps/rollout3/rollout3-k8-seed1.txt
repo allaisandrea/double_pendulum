@@ -1,0 +1,1 @@
+world_model/configs/base.toml --steps 50000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500 --name rollout3-k8-seed1 --set rollout_train=8 --set seed=1
