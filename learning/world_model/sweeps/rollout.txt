@@ -1,0 +1,7 @@
+# Training on K-step rollouts, for the 512 x 3 model that did best in phase 1
+# (50k steps at batch 4096, 205M windows, 20% cooldown). K = 1 is phase 1's
+# one-step loss; K = 4 and 16 backpropagate through the model's own
+# predictions over 32 ms and 128 ms.
+world_model/configs/base.toml --name rollout-k1 --steps 50000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500
+world_model/configs/base.toml --name rollout-k4 --steps 50000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500 --set rollout_train=4
+world_model/configs/base.toml --name rollout-k16 --steps 50000 --set hidden=512 --set batch_size=4096 --set lr=2e-3 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500 --set rollout_train=16

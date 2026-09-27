@@ -42,11 +42,11 @@ from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
 from common.run_lib import Timer, git_commit, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid
 from world_model.evaluation_lib import evaluate
-from world_model.model_lib import WorldModel, last_seen, losses
+from world_model.model_lib import WorldModel, last_seen, rollout_losses
 
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
-OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16"}
+OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -142,7 +142,9 @@ def main(argv=None):
     data_dir = Path(cfg["data_dir"])
     train_recs = load_recordings(data_dir, cfg["train"])
     w, horizon = cfg["window"], max(cfg["horizons"])
-    train = Windows(train_recs, w + 1, device)
+    # Training windows hold the window and the frames the loss rolls out over.
+    rollout_k = cfg.get("rollout_train", 1)
+    train = Windows(train_recs, w + rollout_k, device)
     eval_sets = {
         "train": Windows(train_recs, w + horizon, device),
         **{
@@ -157,7 +159,7 @@ def main(argv=None):
     upright_index = {k: upright_subset(v, eval_index[k], w, hanging) for k, v in eval_sets.items()}
     upright_index = {k: v for k, v in upright_index.items() if len(v) >= MIN_UPRIGHT}
 
-    scale = change_scale(train, 65536, generator)
+    scale = change_scale(Windows(train_recs, w + 1, device), 65536, generator)
     if ck:
         scale = ck["delta_scale"]
     model = WorldModel(w, cfg["hidden"], cfg["layers"], scale).to(device)
@@ -252,14 +254,7 @@ def main(argv=None):
                     g["lr"] = lr
                 batch = train.gather(train.sample(cfg["batch_size"], generator))
                 with torch.autocast("cuda", torch.bfloat16, enabled=bf16):
-                    mse, bce = losses(
-                        forward,
-                        batch.obs[:, :w],
-                        batch.present[:, :w],
-                        batch.action[:, :w],
-                        batch.obs[:, w],
-                        batch.present[:, w],
-                    )
+                    mse, bce = rollout_losses(forward, batch.obs, batch.present, batch.action, rollout_k)
                     loss = mse + cfg["bce_weight"] * bce
                 opt.zero_grad(set_to_none=True)
                 loss.backward()

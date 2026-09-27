@@ -91,3 +91,31 @@ def losses(model: WorldModel, obs, present, action, target, target_present):
         logit, (~target_present).to(logit.dtype)
     )
     return mse, bce
+
+
+def rollout_losses(model: WorldModel, obs, present, action, steps: int):
+    """`losses` averaged over `steps` frames of rollout: the model predicts
+    frame window from the recorded window, then each next frame from its
+    own predictions, fed back seen and on the unit circle, with the
+    recorded actions, and gradients flow through the whole rollout. Each
+    step's error is against the recorded frame. obs [B, window + steps,
+    NUM_TAGS, 2], present likewise, action [B, window + steps - 1]. With
+    steps 1, it is `losses`."""
+    w = model.window
+    o, p = obs[:, :w], present[:, :w]
+    seen = torch.ones_like(p[:, 0])
+    mses, bces = [], []
+    for k in range(steps):
+        target, target_present = obs[:, w + k], present[:, w + k]
+        delta, logit = model(o, p, action[:, k : k + w])
+        ref, has_ref = last_seen(o, p)
+        mask = target_present & has_ref
+        mses.append((delta - (target - ref) / model.delta_scale)[mask].pow(2).mean())
+        bces.append(
+            nn.functional.binary_cross_entropy_with_logits(logit, (~target_present).to(logit.dtype))
+        )
+        if k + 1 < steps:
+            nxt = nn.functional.normalize(ref + delta * model.delta_scale, dim=-1)
+            o = torch.cat([o[:, 1:], nxt[:, None]], dim=1)
+            p = torch.cat([p[:, 1:], seen[:, None]], dim=1)
+    return torch.stack(mses).mean(), torch.stack(bces).mean()
