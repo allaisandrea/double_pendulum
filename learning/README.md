@@ -365,14 +365,17 @@ the rig does (after SIMPLER, arXiv:2405.05941). The pool,
 ```sh
 uv run python -m imagination.ranking export                # the pool, as runs/ranking/<name>.json
 learning/imagination/ranking/collect.sh 120 0              # from the repository root, at the rig
-uv run python -m imagination.ranking evaluate ../recordings/ranking-<stamp>-seed0.tsv \
+learning/imagination/ranking/collect.sh 120 1              # a second pass, in another order
+uv run python -m imagination.ranking evaluate ../recordings/ranking-*-seed0.tsv ../recordings/ranking-*-seed1.tsv \
     --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt
 ```
 
 `collect.sh` runs each policy greedily for 2 minutes, driving 10 s and
-resting 5 s, in a seeded random order, about 30 minutes in all; `kill -INT
-$(cat recordings/ranking.pid)` stops it. `evaluate` splits each recording
-into its drives after a rest (7 per 2 minutes), scores each on the rig
+resting 5 s, in a seeded random order, about 30 minutes a pass; two
+passes in different orders average out drift over a session; `kill -INT
+$(cat recordings/ranking.pid)` stops it. `evaluate` takes any number of manifests, pools
+each policy's recordings, splits them into their drives after a rest
+(7 per 2 minutes), scores each on the rig
 (mean sum of cosines over its first 10 s) and in each world model, from
 rollouts started at the same recorded frames, greedy or sampled as the
 recording was. It prints each policy's rig score with its standard error
