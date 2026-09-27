@@ -10,13 +10,16 @@ profile: world_model.profile timed here (profile_<device>.csv, on the Mac
 profile_mps.csv), and the logs of the cloud profiling jobs, fetched from
 S3 (profile_cloud.csv).
 sim2real: imagination.sim2real of the rollout-trained models (sim2real.csv).
-ranking: imagination.ranking imagine of the two ranking sessions of
+stochastic: world_model.compare of the stochastic world models against
+the one-step one, with their ensembles (stochastic.csv,
+stochastic_upright.csv).
+ranking: imagination.ranking imagine of the three ranking sessions of
 2026-09-27 (ranking_scores.csv), then agreement.
 agreement: imagination.ranking agreement of ranking_scores.csv
 (ranking_agreement.csv), without imagining again; ranking ends with it,
 so only a change of metrics needs it alone.
 
-sim2real and ranking need the world models and policies in runs/ and the
+sim2real, stochastic and ranking need the world models and policies in runs/ and the
 recordings in ../recordings; profile needs AWS credentials (profile
 andrea-personal).
 """
@@ -36,7 +39,19 @@ PROFILE_GRID = ["--widths", "256", "512", "1024", "--depths", "3", "5", "--batch
 WORLD_MODELS = ["wm3", "wm-w512-d3-cd50k", "rollout-k1", "rollout-k4", "rollout3-k6", "rollout3-k8",
                 "rollout3-k8-seed1", "rollout3-k10", "rollout3-k12", "rollout-k16", "rollout2-k32",
                 "rollout3-k64-clip"]
-RANKING_SESSIONS = ["../recordings/ranking-1790523610-seed0.tsv", "../recordings/ranking-1790525401-seed1.tsv"]
+# The stochastic world models, in the ranking sampled (tau 1, as policies
+# train in them) and, for the first, on its mean (@0).
+STOCHASTIC = ["stoch-b05", "stoch-b0"]
+# The ranking sessions' manifests: session 1 (2026-09-27 morning, 13
+# policies), session 2 (afternoon, the K = 1 and K = 6 candidates and
+# ppo-wm3; its first pass split by camera drops) and session 3 (ppo-stoch).
+RANKING_SESSIONS = [f"../recordings/ranking-{m}.tsv" for m in [
+    "1790523610-seed0", "1790525401-seed1",
+    "1790541846-seed0", "1790543406-seed0", "1790544933-seed0", "1790545071-seed1",
+    "1790548265-seed0", "1790548404-seed1"]]
+# The validation recordings the stochastic models are compared on, as
+# world_model.train names them: val_policy_wm3 and val_random_walk.
+STOCHASTIC_VAL = ["1790464558", "1790281442"]
 
 
 def run(*command: str):
@@ -76,9 +91,20 @@ def sim2real():
 
 def ranking():
     python("imagination.ranking", "imagine", *RANKING_SESSIONS,
-           "--world-models", *(f"runs/world_model/{m}/model.pt" for m in WORLD_MODELS),
+           "--world-models", *(f"runs/world_model/{m}/model.pt" for m in WORLD_MODELS + STOCHASTIC),
+           f"runs/world_model/{STOCHASTIC[0]}/model.pt@0",
            "--scores", str(RESULTS / "ranking_scores.csv"))
     agreement()
+
+
+def stochastic():
+    """world_model.compare of the stochastic models and the one-step model
+    they share a recipe with, including their ensembles, on all windows and
+    on those starting upright."""
+    models = [f"runs/world_model/{m}/model.pt" for m in ["rollout-k1", *STOCHASTIC]]
+    python("world_model.compare", *models, "--val", *STOCHASTIC_VAL, "--csv", str(RESULTS / "stochastic.csv"))
+    python("world_model.compare", *models, "--val", *STOCHASTIC_VAL, "--upright",
+           "--csv", str(RESULTS / "stochastic_upright.csv"))
 
 
 def agreement():
@@ -86,7 +112,8 @@ def agreement():
            "--csv", str(RESULTS / "ranking_agreement.csv"))
 
 
-STEPS = {"wandb": wandb, "profile": profile, "sim2real": sim2real, "ranking": ranking, "agreement": agreement}
+STEPS = {"wandb": wandb, "profile": profile, "sim2real": sim2real, "stochastic": stochastic, "ranking": ranking,
+         "agreement": agreement}
 
 
 def main():

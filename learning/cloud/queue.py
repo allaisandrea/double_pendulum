@@ -11,6 +11,11 @@ instances run, else on demand while fewer than --on-demand do. A job
 whose instance vanished without a status, as a spot interruption leaves
 it, is simply started again: jobs carry on from their checkpoints on S3.
 A failed job is never retried.
+
+The queue runs one commit: HEAD when it starts (the working tree must be
+clean then), or --code. It launches every new job at that commit, so that
+work committed or left uncommitted while it runs changes nothing; a job
+already pinned (launch.py) keeps its own commit.
 """
 import argparse
 import shlex
@@ -21,7 +26,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from launch import run_uri  # noqa: E402
+from launch import resolve, run_uri  # noqa: E402
 
 
 def aws(profile, *args):
@@ -53,7 +58,10 @@ def main():
     parser.add_argument("--on-demand", type=int, default=1)
     parser.add_argument("--poll", type=int, default=120)
     parser.add_argument("--profile", default="andrea-personal")
+    parser.add_argument("--code", default="HEAD", help="the commit to launch new jobs at")
     args = parser.parse_args()
+    commit = resolve(args.code)
+    print(f"{time.strftime('%H:%M')} launching new jobs at {commit[:7]}", flush=True)
 
     jobs = []
     for line in args.file.read_text().splitlines():
@@ -89,6 +97,8 @@ def main():
                     continue
                 cmd = ["uv", "run", "-q", "python", str(HERE / "launch.py"), *job["args"]]
                 cmd[5:5] = ["--on-demand"] if market == "on-demand" else []
+                if "--code" not in job["args"]:
+                    cmd[5:5] = ["--code", commit, "--keep-pin"]
                 out = subprocess.run(cmd, capture_output=True, text=True, cwd=HERE.parent)
                 if out.returncode == 0:
                     print(f"{time.strftime('%H:%M')} started {job['name']} on {market}: {out.stdout.strip()[:90]}", flush=True)

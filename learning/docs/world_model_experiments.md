@@ -1,16 +1,17 @@
 # Double pendulum world model experiments
 
-As of 2026-09-27, after the policy ranking on the rig. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
+As of 2026-09-27, after three policy ranking sessions on the rig and the first stochastic world model. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
 
 ## Summary
 
-Every world model overrates the policies trained in it, so a policy has to be judged in a model it did not train in. Ranked on the rig, 13 policies are ordered almost exactly by the plain one-step 512 × 3 model (Spearman 0.99). The K = 8 rollout-trained model, chosen earlier on four policies, ranks them worst: it forecast +2.2 per frame for its own policy `ppo-k8`, which scores +1.03 on the rig, behind `ppo-wm3` (+1.33).
+A stochastic world model, sampled in imagination, trains the best policy so far and judges policies best. The one-step 512 × 3 model with a Gaussian over each predicted change, trained on β-NLL, trained `ppo-stoch`, which scores +1.81 per frame on the rig, against +1.42 for the best policy from a deterministic model. It forecast +1.93 for it; the deterministic models overrate their own policies by 0.4 to 0.8 per frame more than the rest.
 
 - **Scaling helps little.** Across 8 sizes (0.18M to 17M parameters) and 5 training lengths, short-horizon error improved about 15%; larger models overfit the 5 hours of data. No size fixed the long horizon near upright.
 - **Rollout training is the big lever for open-loop accuracy.** Training on K-frame rollouts cut the 0.5 s error from upright from 1.59 (worse than copying the last frame) to 0.32 at K = 32.
 - **Open-loop accuracy is not what policies need.** One-step models overrate a balancing policy; long-rollout models underrate it, because they learn to predict the average future.
-- **Policies exploit the model they train in.** PPO finds the model's errors: K = 8 overrates its own policies by 1.01 per frame on average and the others by 0.06; wm3 its own by 0.60 and the others by 0.11. A second K = 8 seed, and K = 10–16, share the errors, so they are no independent check.
-- **Rank policies with one-step models, K ≤ 6** (MMRV 0.02–0.07), and choose world models with the ranking (`imagination.ranking`), not with 1 − R² or a handful of policies.
+- **Policies exploit a deterministic model they train in.** PPO finds its errors: K = 8, K = 6 and K = 1 overrate their own policies by 0.7–0.8 per frame more than the others, wm3 by 0.4. A second seed of a model shares its errors, so it is no independent check.
+- **Sampling removes the optimism and the exploitation.** The stochastic model sampled overrates policies by 0.10 on average and its own by no more; on its mean, it overrates them by 0.40 like the deterministic models. Its policy balances with small corrections, where the others saturate the motor half the time.
+- **Choose world models with the ranking** (`imagination.ranking`), not with 1 − R² or a handful of policies.
 
 ## Setup
 
@@ -92,47 +93,79 @@ The prediction for ppo-wm3 falls steadily with K: one-step models overrate balan
 
 ## Policy ranking on the rig
 
-Ranking 13 policies on the rig, after SIMPLER (arXiv:2405.05941), shows which world models can judge policies: the one-step models order them almost exactly, and K = 8–32 order them badly, because they overrate the policies trained in K = 8.
+Ranking 20 policies on the rig, after SIMPLER (arXiv:2405.05941), shows which world models can judge policies. Every deterministic model overrates the policies trained in it by 0.4 to 0.8 per frame more than the rest; the sampled stochastic model does not, and ranks and forecasts best.
 
-**Protocol** (`imagination.ranking`, `imagination/ranking/`): each policy ran greedily on the rig for 2 minutes, driving 10 s and resting 5 s, in two sessions with the order shuffled (52 minutes in all). Each drive after the first is an episode: its real score is the sum of the arms' cosines per frame over the drive, and each world model imagines 8 rollouts from the same recorded 16 frames before the drive, with the policy in the loop. 14 episodes per policy. The pool spreads over the range the K = 8 model predicts: `ppo-k8` and four of its checkpoints, six policies trained in wm3, and two older ones; 10 of the 13 had never run on the rig, so their data is in no world model's training set.
+**Protocol** (`imagination.ranking`, `imagination/ranking/`): each policy runs greedily on the rig for 2 minutes, driving 10 s and resting 5 s, in two passes in shuffled orders. Each drive after the first is an episode: its real score is the sum of the arms' cosines per frame over the drive, and each world model imagines 8 rollouts from the same recorded 16 frames before the drive, with the policy in the loop. There were three sessions, all on 2026-09-27, 14 episodes per policy:
+
+- **Session 1** (13 policies, 52 minutes): `ppo-k8` and four of its checkpoints, six policies trained in wm3, and two older ones.
+- **Session 2**: policies trained in K = 1 (two seeds, at 2,000 and 5,000 iterations) and K = 6 (at 1,000 and 5,000), and `ppo-wm3` again. The camera dropped off USB three times; the passes were completed in pieces, which pool as one.
+- **Session 3**: `ppo-stoch`, trained in the stochastic world model (next section).
+
+17 of the 20 had never run on the rig, so their data is in no world model's training set. `ppo-wm3` scored +1.33 in session 1 and +1.31 in session 2: the rig held steady.
 
 ![Rig score of each policy, coloured by the world model it was trained in](figures/ranking_rig.svg)
 
-- The three best policies were trained in wm3, and score within 0.15 of each other. `ppo-wm3-lr1e3-5k`'s three-arm balance in wm3 (+2.54 there) does not happen on the rig.
+- `ppo-stoch` leads by a wide margin: +1.81 ± 0.04, against +1.42 ± 0.03 for `ppo-k6`, the best from a deterministic model.
+- The K = 1 and K = 6 policies improve on `ppo-wm3` (+1.32) by about 0.1. The K = 1 policies gain nothing from 2,000 to 5,000 iterations (seed 0: +1.38 at both; seed 1: +1.38, then +1.26), as the model is exploited further.
 - The `ppo-k8` checkpoints improve steadily with training, from +0.44 at iteration 100 to +1.03 at 5,000.
 
 Each world model's prediction against the rig; a perfect model puts every policy on the dotted line. Stars are the policies trained in that model:
 
 ![Predicted against real score for six world models, stars marking policies trained in the model](figures/ranking_scatter.svg)
 
-- **Each model overrates its own policies most.** K = 8 puts its own four trained checkpoints at +1.6 to +2.3, against +0.54 to +1.03 real, while it predicts the wm3-trained policies well. wm3 puts its own balancers at +2.1 to +2.5, against +1.2 to +1.3, while it predicts `ppo-k8` exactly (+1.04 against +1.03).
-- One-step models overrate balancing by about 0.5 across the board, but consistently, so the order holds. Long-rollout models (K = 64) underrate every balancer and flatten the order.
+- **Each deterministic model overrates its own policies most.** K = 8 puts its four trained checkpoints at +1.6 to +2.3, against +0.54 to +1.03 real; K = 1 its own at +2.1 to +2.6, against +1.26 to +1.38; wm3 its balancers at +2.1 to +2.5, against +1.2 to +1.3.
+- **They misplace `ppo-stoch`.** Every model predicts it at +1.9 to +2.1, below or level with their own policies, so K = 1, K = 6 and wm3 rank it under policies it beats by 0.4 on the rig.
+- One-step models overrate balancing across the board; long-rollout models (K = 32, K = 64) underrate every balancer and flatten the order. The stochastic model, sampled, lies along the line.
 
 Each policy's overrating in each world model (predicted − real); stars are the model's own policies:
 
 ![Predicted minus real score of every policy in every world model, stars marking the policies trained in the model](figures/ranking_exploitation.svg)
 
-- **The exploitation gap**, how much more a model overrates its own policies than the others, is +0.94 per frame for K = 8 and +0.49 for wm3. The gap grows with training: K = 8 is right about `ppo-k8` at iteration 100 (+0.08) and overrates it by 1.1–1.3 from iteration 250 on.
-- **It spreads to the models closest to K = 8.** K = 8 seed 1, K = 10 and K = 12 overrate the K = 8 policies by up to 1.2 too, though none was trained in them; K = 1–6 overrate them by 0.1–0.4, as they do the rest.
+- **The exploitation gap**, how much more a model overrates its own policies than the others, is +0.82 per frame for K = 8, +0.73 for K = 1, +0.74 for K = 6 and +0.41 for wm3; for the stochastic model it is +0.01. The gap grows with training: K = 8 is right about `ppo-k8` at iteration 100 (+0.08) and overrates it by 1.1–1.3 from iteration 250 on.
+- **It spreads to the models closest to the one trained in.** K = 8 seed 1, K = 10 and K = 12 overrate the K = 8 policies by up to 1.2 too, though none was trained in them.
 
-Agreement over policies (MMRV, SIMPLER's mean maximum rank violation: 0 is the right order, and a swap costs the real gap between the swapped policies). For wm3 and K = 8, "held out" leaves out the policies trained in them; the other models trained none:
+Agreement over policies (MMRV, SIMPLER's mean maximum rank violation: 0 is the right order, and a swap costs the real gap between the swapped policies). "Held out" leaves out the policies trained in the model, for the models some were trained in:
 
 ![MMRV, Spearman correlation and mean absolute error for each world model, over all policies, those new to the rig, and those not trained in the model](figures/ranking_agreement.svg)
 
-- The one-step 512 × 3 model (K = 1) ranks best: MMRV 0.02, Spearman 0.99, and as well on the 10 policies new to the rig (MMRV 0.03).
-- K = 4 and K = 6 rank nearly as well (MMRV 0.05–0.07) with the smallest absolute error (0.18–0.22).
-- K = 8 to 32 rank badly (MMRV 0.31–0.41), from the `ppo-k8` checkpoints: exploitation of K = 8 carries over to the models closest to it. K = 64 is less affected (MMRV 0.25), since it underrates everything.
-- **Held out, K = 8 is the most accurate model** (mean error 0.15, bias +0.06, against 0.27 and +0.27 for K = 1), but it still ranks worse (MMRV 0.18 against 0.02): it squeezes the three best policies into +1.10 to +1.34 and misorders them. wm3 held out does about as well as on all policies (MMRV 0.07), with a mean error of only 0.11.
+- **The sampled stochastic model is the best judge**: MMRV 0.07, Spearman 0.96, mean error 0.13 and bias +0.10 over all 20. The same network on its mean does as badly as the deterministic one-step models (MMRV 0.14, mean error 0.40).
+- Held out, the one-step models rank nearly as well (K = 1: MMRV 0.07, Spearman 0.99; K = 6: MMRV 0.05) but overrate policies by 0.26–0.28 on average; over all policies, own included, their order breaks (MMRV 0.14–0.16).
+- K = 8 to K = 64 rank badly (MMRV 0.52–0.76); held out, K = 8 still misorders the best policies (MMRV 0.21).
 - Both views matter: held out measures a world model as a judge of other models' policies; all policies, own included, measures it as the forecaster of what is trained in it, which is how `ppo-k8`'s +2.2 was forecast.
+
+## The stochastic world model
+
+A world model that predicts a distribution over the next frame, and is sampled in imagination, trains the best policy yet: `ppo-stoch` scores +1.81 per frame on the rig, 0.4 above any policy from a deterministic model, and the model forecast it at +1.93.
+
+**The model** (`stoch-b05`) is the one-step 512 × 3 recipe of K = 1 with a second output per change: its log-variance, so the change is a normal distribution with a diagonal covariance. It trains on the negative log-likelihood, weighted by the variance to the power β = 0.5 (β-NLL, arXiv:2203.09168), which stops hard transitions from buying a loose fit with a large variance. Imagination draws each frame from it (`tau` 1; `tau` 0 follows its mean). `stoch-b0` is the same with the plain likelihood (β = 0).
+
+**One step ahead**, on val_policy_wm3 (`world_model.compare`, the same 4,096 windows for every model):
+
+- β = 0.5 keeps the mean as accurate as MSE training (one-step MSE 0.0200 against 0.0206 for K = 1); with β = 0 it is a third worse (0.0269), as β-NLL predicts.
+- The spread is nearly calibrated: 73% of changes fall within one predicted standard deviation and 94% within two, against 68% and 95% for a normal distribution. The errors are heavier-tailed than the model assumes. The median standard deviation is 8% of a typical frame's change: the noise is small.
+
+**Over many frames**, 8 sampled rollouts per window make an ensemble (`world_model.compare`, `eval_ensemble` in training):
+
+![1 − R² and CRPS of the stochastic model's mean rollout and ensemble against the one-step model, on all windows and from upright, and the ensemble's spread over its error](figures/stochastic_ensemble.svg)
+
+- **The ensemble's mean is far better than the mean rollout** at long horizons: 1 − R² at 64 frames falls from 0.69 to 0.48, and from upright from 1.51 to 1.01, no longer worse than copying the last frame. The mean rollout itself is no better than K = 1's.
+- Its CRPS, a proper score of the whole distribution, is 0.47 of copying's at 64 frames (0.84 from upright).
+- **The ensemble is somewhat overconfident**: its spread is 0.75–0.85 of its error. A larger `tau` would widen it.
+
+**In closed loop, sampling removes most of the optimism about balancing.** Over the 20 ranked policies, the sampled model overrates by +0.10 on average; the same network on its mean overrates by +0.40, like every deterministic one-step model. For `ppo-wm3` it predicts +1.29 against +1.32 on the rig; on its mean, +1.84. The false equilibrium of one-step models near upright is the mean of futures that fall either way; sampled, the model falls.
+
+**And it is not exploited.** `ppo-stoch`, trained in it with the recipe of `ppo-k1` (lr 1e-3, 5,000 iterations, speed penalty), scores +1.93 in it and +1.81 on the rig: an exploitation gap of +0.01, against +0.4 to +0.8 for every deterministic model. PPO cannot lean on a fixed point the model does not hold. In training, `ppo-stoch` looked weaker than the K = 1 policies (+1.69 in its model from hanging, against about +2.5 in theirs), because its model was honest.
+
+**It balances gently.** On the rig, with all three arms within 30° of upright, 15% of `ppo-stoch`'s actions are at the motor's ±64 limit and 55% within ±16; `ppo-k6`, `ppo-k1` and `ppo-wm3` saturate 48–57% of the time and stay within ±16 only 14–19% of it. It also has all three arms up for 9.5% of its driving, against 3.7% for `ppo-wm3`. A policy trained against noise cannot rely on the hard, exact corrections that a deterministic model rewards.
 
 ## Costs and next steps
 
-The program used roughly 15–20 GPU instance-hours, an estimated $15 (Cost Explorer lags a day), and left 8.4 GB of runs on S3, about $0.20 a month.
+The program used roughly 20–25 GPU instance-hours, an estimated $20, and left about 9 GB of runs on S3, about $0.20 a month.
 
-1. **Train policies against exploitation**: an ensemble of world models of different kinds, with a penalty on their disagreement, pushes PPO away from the states where any one model is wrong. Choose policies with a model they did not train in, such as the one-step 512 × 3.
-2. **Add the ranking recordings to the training data**: 52 minutes of 13 policies, most of them new to the rig, cover states no training set holds.
-3. **Stochastic world models** (ensembles, or distributional outputs) could keep K = 32–64's long-horizon accuracy without the averaging that makes them pessimistic in closed loop.
-4. **Extend the ranking** with each new policy and world model: `imagination.ranking imagine` pools every session's episodes, and `agreement` rescores without new rollouts.
-5. **Faster policy training on GPUs**: on the L40S it ran at the Mac's speed, and single-rollout evaluation took 20% of the time.
+1. **Improve the policy in the stochastic model** (under way, `cloud/queues/cloud-12.txt`): longer training (10k and 20k iterations), a lower learning rate, a second seed, a wider spread (`tau` 1.5), a longer horizon (γ 0.998), a wider policy and upright starts, each scored on 16 sampled rollouts. The model's forecasts are honest, so it can choose among them before the rig confirms.
+2. **Calibrate the ensemble**: its spread is 0.75–0.85 of its error; `tau` above 1, or training the variance on rollouts, would widen it.
+3. **Collect with `ppo-stoch`**, sampled: it balances more than any earlier policy, so its data covers the states the next world model most needs; with the ranking recordings (about 90 minutes, 20 policies) as well.
+4. **Stochastic rollout training**: rollout-trained models were the most accurate open loop; trained on the NLL of their own sampled rollouts, they might keep that accuracy without the averaging.
+5. **Extend the ranking** with each new policy and world model: `imagination.ranking imagine` pools every session's episodes, and `agreement` rescores without new rollouts.
 
-The code is in `learning/` (main, as of commit ad2bc75), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`.
+The code is in `learning/` (main), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`.

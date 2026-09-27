@@ -30,14 +30,17 @@ plt.rcParams.update({
 })
 BLUE, ORANGE, GREEN, RED, PURPLE, GREY = "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#7f7f7f"
 
-TRAINED_COLOR = {"wm3": BLUE, "rollout3-k8": ORANGE}
-TRAINED_LABEL = {"wm3": "trained in wm3", "rollout3-k8": "trained in K = 8", None: "trained in older models"}
+TRAINED_COLOR = {"wm3": BLUE, "rollout3-k8": ORANGE, "rollout-k1": GREEN, "rollout3-k6": PURPLE, "stoch-b05": RED}
+TRAINED_LABEL = {"wm3": "trained in wm3", "rollout3-k8": "trained in K = 8", "rollout-k1": "trained in K = 1",
+                 "rollout3-k6": "trained in K = 6", "stoch-b05": "trained in the stochastic model",
+                 None: "trained in older models"}
 # The ranked world models, in the order the figures show them.
 MODELS = {
     "wm3": "wm3 (256 × 3)", "wm-w512-d3-cd50k": "512 × 3, phase 1", "rollout-k1": "K = 1",
     "rollout-k4": "K = 4", "rollout3-k6": "K = 6", "rollout3-k8": "K = 8",
     "rollout3-k8-seed1": "K = 8, seed 1", "rollout3-k10": "K = 10", "rollout3-k12": "K = 12",
     "rollout-k16": "K = 16", "rollout2-k32": "K = 32", "rollout3-k64-clip": "K = 64",
+    "stoch-b05@0": "stochastic, mean", "stoch-b05": "stochastic, sampled", "stoch-b0": "stochastic β = 0, sampled",
 }
 # The rollout runs that make up the K series: one per K, 512 × 3, 50k
 # steps, lr 2e-3 (K = 64 with gradient clipping and lr 1e-3, as lr 2e-3
@@ -194,7 +197,7 @@ def trained(row: dict) -> str | None:
 
 def ranking_rig():
     rows = sorted(read("ranking_scores"), key=lambda r: num(r["rig"]))
-    fig, ax = plt.subplots(figsize=(6.5, 4))
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
     for i, r in enumerate(rows):
         ax.barh(i, num(r["rig"]), xerr=num(r["rig_sem"]), color=TRAINED_COLOR.get(trained(r), GREY), capsize=2)
     ax.set_yticks(range(len(rows)), [r["policy"] for r in rows])
@@ -208,9 +211,9 @@ def ranking_rig():
 
 def ranking_scatter():
     rows = read("ranking_scores")
-    shown = ["wm3", "rollout-k1", "rollout3-k6", "rollout3-k8", "rollout-k16", "rollout3-k64-clip"]
+    shown = ["wm3", "rollout-k1", "rollout3-k6", "rollout3-k8", "stoch-b05@0", "stoch-b05"]
     agreement = {r["world_model"]: r for r in read("ranking_agreement") if r["policies"] == "all"}
-    fig, axes = plt.subplots(2, 3, figsize=(8, 5.6), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 3, figsize=(8, 6), sharex=True, sharey=True)
     top = max(num(r[m]) for r in rows for m in shown) + 0.1
     for ax, model in zip(axes.flat, shown):
         ax.plot([0, top], [0, top], color=GREY, lw=1, ls=":")
@@ -234,7 +237,7 @@ def ranking_scatter():
     handles.append(plt.Line2D([], [], marker="*", ls="", markersize=11, color="white", mec="black",
                               label="trained in this world model"))
     fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=8)
-    save(fig, "ranking_scatter", rect=(0, 0.05, 1, 1))
+    save(fig, "ranking_scatter", rect=(0, 0.08, 1, 1))
 
 
 def ranking_agreement():
@@ -244,7 +247,7 @@ def ranking_agreement():
     labels = {"all": f"all {by[models[0], 'all']['n']} policies",
               "new": f"{by[models[0], 'new']['n']} new to the rig",
               "held_out": "held out: not trained in the model (where some were)"}
-    fig, axes = plt.subplots(1, 3, figsize=(8.5, 4), sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(8.5, 5), sharey=True)
     height = 0.8 / len(subsets)
     for ax, key, title in zip(axes, ("mmrv", "spearman", "mae"),
                               ("MMRV (lower is better)", "Spearman (higher is better)",
@@ -267,7 +270,7 @@ def ranking_exploitation():
     """Each policy's overrating in each world model, its own policies starred."""
     rows = read("ranking_scores")
     models = [m for m in MODELS if m in rows[0]]
-    fig, ax = plt.subplots(figsize=(8, 3.6))
+    fig, ax = plt.subplots(figsize=(9.5, 4.8))
     ax.axhline(0, color=GREY, lw=1)
     for i, m in enumerate(models):
         for j, r in enumerate(rows):
@@ -283,13 +286,48 @@ def ranking_exploitation():
                for t, label in TRAINED_LABEL.items()]
     handles.append(plt.Line2D([], [], marker="*", ls="", markersize=10, color="white", mec="black",
                               label="trained in this world model"))
-    ax.legend(handles=handles, fontsize=8, loc="upper right")
-    save(fig, "ranking_exploitation")
+    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=4)
+    save(fig, "ranking_exploitation", rect=(0, 0.1, 1, 1))
+
+
+def stochastic_ensemble():
+    """The stochastic model's open-loop accuracy on the balancing validation
+    set: its mean rollout and its ensemble against the one-step model."""
+    horizons = [1, 4, 16, 64, 125]
+    val = "1790464558"
+    fig, axes = plt.subplots(1, 3, figsize=(9, 3.2))
+    for ax, name, title in ((axes[0], "stochastic", "all windows"), (axes[1], "stochastic_upright", "from upright")):
+        by = {r["checkpoint"]: r for r in read(name) if r["recording"] == val}
+        for key, model, label, color, style in [
+                ("one_minus_r2", "rollout-k1", "one-step (K = 1), mean", GREY, "o--"),
+                ("one_minus_r2", "stoch-b05", "stochastic, mean rollout", BLUE, "o--"),
+                ("ensemble/one_minus_r2", "stoch-b05", "stochastic, mean of 8 samples", BLUE, "o-"),
+                ("ensemble/crps", "stoch-b05", "stochastic, CRPS / copy-last", RED, "s-")]:
+            ax.plot(horizons, [num(by[model][f"{key}/h{h:03d}"]) for h in horizons], style, color=color, label=label)
+        ax.axhline(1, color=RED, lw=1, ls=":")
+        ax.set_title(title)
+    upright = {r["checkpoint"]: r for r in read("stochastic_upright") if r["recording"] == val}
+    alls = {r["checkpoint"]: r for r in read("stochastic") if r["recording"] == val}
+    for rows, label, style in ((alls, "all windows", "o-"), (upright, "from upright", "s--")):
+        axes[2].plot(horizons, [num(rows["stoch-b05"][f"ensemble/spread_skill/h{h:03d}"]) for h in horizons], style,
+                     color=BLUE, label=label)
+    axes[2].axhline(1, color=GREY, lw=1, ls=":")
+    axes[2].set_ylim(0, 1.2)
+    axes[2].set_title("ensemble spread / error")
+    axes[0].set_ylabel("1 − R², or CRPS over copying")
+    for ax in axes:
+        ax.set_xscale("log")
+        ax.set_xticks(horizons, [str(h) for h in horizons])
+        ax.minorticks_off()
+        ax.set_xlabel("frames ahead")
+    axes[0].legend(fontsize=7)
+    axes[2].legend(fontsize=7)
+    save(fig, "stochastic_ensemble")
 
 
 if __name__ == "__main__":
     FIGURES.mkdir(exist_ok=True)
     for draw in (profiling, batch, scaling, rollout, sim2real, ranking_rig, ranking_scatter,
-                 ranking_agreement, ranking_exploitation):
+                 ranking_agreement, ranking_exploitation, stochastic_ensemble):
         draw()
     print(f"wrote {len(list(FIGURES.glob('*.svg')))} figures to {FIGURES}")

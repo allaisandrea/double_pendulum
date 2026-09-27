@@ -140,6 +140,8 @@ def main():
     parser.add_argument("--max-hours", type=float, default=12, help="terminate the instance after this, however the job goes")
     parser.add_argument("--code", help="the commit to run, and pin (default: the job's pinned commit, "
                                          "else HEAD)")
+    parser.add_argument("--keep-pin", action="store_true",
+                        help="with --code, only for a job not yet pinned: a pinned one keeps its commit")
     parser.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "andrea-personal"))
     args = parser.parse_args(argv)
     if args.kind != "bench" and args.config == "-":
@@ -148,6 +150,8 @@ def main():
     job = [args.kind, args.name, args.config, *extra]
     uri = run_uri(args.kind, args.name)
     record = pinned(uri, args.profile)
+    if args.keep_pin and record:
+        args.code = None
     if args.code or not record:
         commit, repin = resolve(args.code or "HEAD"), True
     else:

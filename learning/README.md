@@ -126,7 +126,11 @@ uv run python -m world_model.compare runs/world_model/wm3/model.pt runs/world_mo
   prefix, on each validation set and its upright subset; `--csv` also
   writes them, with each run's training settings.
 - `compare` evaluates several checkpoints on the same fixed windows of any
-  recordings, so models trained on different data compare like for like.
+  recordings, so models trained on different data compare like for like;
+  `--upright` keeps the windows starting upright, a stochastic model is
+  also scored as an ensemble of `--ensemble` (8) sampled rollouts per
+  window (1 − R² of its mean, CRPS over copying, spread over error), and
+  `--csv` writes every metric.
 
 ### Metrics
 
@@ -243,7 +247,10 @@ misses are drawn from the world model's probabilities with a generator
 seeded by `eval_seed`, so evaluating the same policy twice on the same
 device gives the same numbers. At the end of training, the last
 evaluation's rollout becomes a video, `runs/policy/<name>/rollout.mp4`,
-logged to W&B as `rollout_from_hanging`.
+logged to W&B as `rollout_from_hanging`. With `eval_rollouts` N above 1,
+N more rollouts from hanging, from the same seed, give `eval/mean/cos_sum`
+with its standard error and `eval/mean/upright`: in a stochastic world
+model one rollout is one draw.
 
 ### Evaluating, exporting and watching policies
 
