@@ -1,0 +1,1 @@
+world_model/configs/base.toml --steps 50000 --set hidden=512 --set batch_size=4096 --set warmup_steps=1000 --set compile=true --set bf16=true --set eval_every=2500 --set max_grad_norm=1.0 --name rollout3-k64-clip --set lr=1e-3 --set rollout_train=64
