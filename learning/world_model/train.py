@@ -46,7 +46,7 @@ from world_model.model_lib import WorldModel, last_seen, losses
 
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
-OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps"}
+OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -162,6 +162,10 @@ def main(argv=None):
         scale = ck["delta_scale"]
     model = WorldModel(w, cfg["hidden"], cfg["layers"], scale).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    # Training can run the model compiled, and its matrix products in
+    # bfloat16 on CUDA; evaluation always runs it as it is, in float32.
+    forward = torch.compile(model) if cfg.get("compile") else model
+    bf16 = bool(cfg.get("bf16")) and device.type == "cuda"
     timer = Timer(device)
     if ck:
         model.load_state_dict(ck["model"])
@@ -247,15 +251,16 @@ def main(argv=None):
                 for g in opt.param_groups:
                     g["lr"] = lr
                 batch = train.gather(train.sample(cfg["batch_size"], generator))
-                mse, bce = losses(
-                    model,
-                    batch.obs[:, :w],
-                    batch.present[:, :w],
-                    batch.action[:, :w],
-                    batch.obs[:, w],
-                    batch.present[:, w],
-                )
-                loss = mse + cfg["bce_weight"] * bce
+                with torch.autocast("cuda", torch.bfloat16, enabled=bf16):
+                    mse, bce = losses(
+                        forward,
+                        batch.obs[:, :w],
+                        batch.present[:, :w],
+                        batch.action[:, :w],
+                        batch.obs[:, w],
+                        batch.present[:, w],
+                    )
+                    loss = mse + cfg["bce_weight"] * bce
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 opt.step()

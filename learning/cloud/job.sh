@@ -11,7 +11,9 @@
 # policy iterations and 5000 world model steps without W&B; or run, which
 # runs the module CONFIG names with ARGS (python -m CONFIG ARGS); or scale,
 # which trains world_model.scale's long run NAME and its branches NAME-cd*
-# with CONFIG and ARGS, carrying on from whatever of them S3 holds.
+# with CONFIG and ARGS, carrying on from whatever of them S3 holds; or
+# sweep, which runs world_model.sweep on the file CONFIG, whose runs must
+# be named NAME-*.
 #
 # The run directory and this job's log go to S3_ROOT/runs/KIND/NAME every
 # 5 minutes and at the end, with job_status holding the exit status. A
@@ -30,11 +32,11 @@ cd "$(dirname "$0")/.." || exit 1  # learning/
 RUN_DIR=runs/$KIND/$NAME
 RUN_URI=$S3_ROOT/runs/$KIND/$NAME
 # A scale job's runs: world model runs named NAME and NAME-cd*.
-[ "$KIND" = scale ] && RUN_URI=$S3_ROOT/runs/world_model/$NAME
-SCALE_SYNC=(--exclude "*" --include "$NAME/*" --include "$NAME-cd*")
+[ "$KIND" = scale ] || [ "$KIND" = sweep ] && RUN_URI=$S3_ROOT/runs/world_model/$NAME
+SCALE_SYNC=(--exclude "*" --include "$NAME/*" --include "$NAME-*")
 
 upload() {
-    if [ "$KIND" = scale ]; then
+    if [ "$KIND" = scale ] || [ "$KIND" = sweep ]; then
         aws s3 sync runs/world_model "$S3_ROOT/runs/world_model" "${SCALE_SYNC[@]}" --only-show-errors
     elif [ -d "$RUN_DIR" ]; then
         aws s3 sync "$RUN_DIR" "$RUN_URI" --only-show-errors
@@ -60,7 +62,7 @@ export PATH=$HOME/.local/bin:$PATH
 uv sync -q || exit 1
 aws s3 sync "$S3_ROOT/data" data --only-show-errors || exit 1
 
-if [ "$KIND" = world_model ] || [ "$KIND" = policy ] || [ "$KIND" = scale ]; then
+if [ "$KIND" = world_model ] || [ "$KIND" = policy ] || [ "$KIND" = scale ] || [ "$KIND" = sweep ]; then
     WANDB_API_KEY=$(aws secretsmanager get-secret-value --secret-id double_pendulum/wandb_api_key \
         --query SecretString --output text) || exit 1
     export WANDB_API_KEY
@@ -104,6 +106,11 @@ print('policy seconds per phase over 100 iterations:', {k: round(v, 1) for k, v 
         ;;
     run)
         uv run python -m "$CONFIG" "${ARGS[@]}"
+        ;;
+    sweep)
+        mkdir -p runs/world_model
+        aws s3 sync "$S3_ROOT/runs/world_model" runs/world_model "${SCALE_SYNC[@]}" --only-show-errors
+        uv run python -m world_model.sweep "$CONFIG" "${ARGS[@]}"
         ;;
     scale)
         mkdir -p runs/world_model

@@ -1,0 +1,9 @@
+# Batch size, learning rate and precision for the current model (256 x 3),
+# each trained on 100M windows: 100k steps at batch 1024, 24.4k at 4096,
+# 6.1k at 16384. About 20 evaluations each.
+world_model/configs/base.toml --name batch-b1024-lr1e-3 --steps 100000 --set eval_every=5000
+world_model/configs/base.toml --name batch-b4096-lr1e-3 --steps 24400 --set batch_size=4096 --set eval_every=1220
+world_model/configs/base.toml --name batch-b4096-lr2e-3 --steps 24400 --set batch_size=4096 --set lr=2e-3 --set eval_every=1220
+world_model/configs/base.toml --name batch-b16384-lr2e-3 --steps 6100 --set batch_size=16384 --set lr=2e-3 --set eval_every=305
+world_model/configs/base.toml --name batch-b16384-lr4e-3 --steps 6100 --set batch_size=16384 --set lr=4e-3 --set eval_every=305
+world_model/configs/base.toml --name batch-b4096-lr2e-3-bf16 --steps 24400 --set batch_size=4096 --set lr=2e-3 --set eval_every=1220 --set compile=true --set bf16=true
