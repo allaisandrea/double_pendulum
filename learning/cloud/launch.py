@@ -127,7 +127,9 @@ def main():
             {"MarketType": "spot", "SpotOptions": {"SpotInstanceType": "one-time", "InstanceInterruptionBehavior": "terminate"}}
         )]
     instance, instance_type = launch_somewhere(run, args.instance.split(","), args.profile)
-    run_uri = f"{S3_ROOT}/runs/{args.kind}/{args.name}"
+    # Scale and sweep jobs keep their runs, and their log, with the world models.
+    kind_dir = "world_model" if args.kind in ("scale", "sweep") else args.kind
+    run_uri = f"{S3_ROOT}/runs/{kind_dir}/{args.name}"
     print(f"{instance}: {args.kind} {args.name} on {'on-demand' if args.on_demand else 'spot'} {instance_type}; "
           f"its run and log go to {run_uri}")
     if args.follow:
