@@ -154,7 +154,20 @@ A world model that predicts a distribution over the next frame, and is sampled i
 
 **In closed loop, sampling removes most of the optimism about balancing.** Over the 20 ranked policies, the sampled model overrates by +0.10 on average; the same network on its mean overrates by +0.40, like every deterministic one-step model. For `ppo-wm3` it predicts +1.29 against +1.32 on the rig; on its mean, +1.84. The false equilibrium of one-step models near upright is the mean of futures that fall either way; sampled, the model falls.
 
-**And it is not exploited.** `ppo-stoch`, trained in it with the recipe of `ppo-k1` (lr 1e-3, 5,000 iterations, speed penalty), scores +1.93 in it and +1.81 on the rig: an exploitation gap of +0.01, against +0.4 to +0.8 for every deterministic model. PPO cannot lean on a fixed point the model does not hold. In training, `ppo-stoch` looked weaker than the K = 1 policies (+1.69 in its model from hanging, against about +2.5 in theirs), because its model was honest.
+Its predictions against the rig, beside the one-step models it compares with: K = 1, the same recipe without the variance, and K = 6, the best of the rollout-trained ones. Stars are the policies trained in each model:
+
+![Predicted against real score for K = 1, K = 6, and the stochastic model on its mean and sampled, stars marking policies trained in the model](figures/stochastic_scatter.svg)
+
+**And it is not exploited.** `ppo-stoch`, trained in it with the recipe of `ppo-k1` (lr 1e-3, 5,000 iterations, speed penalty), scores +1.93 in it and +1.81 on the rig: an exploitation gap of +0.01, against +0.4 to +0.8 for every deterministic model. PPO cannot lean on a fixed point the model does not hold.
+
+Each policy's overrating in the four models (predicted − real), stars marking each model's own policies, and the agreement over all 20:
+
+![Predicted minus real score of every policy in K = 1, K = 6 and the stochastic model on its mean and sampled](figures/stochastic_exploitation.svg)
+
+![MMRV, mean absolute error, and overrating of their own policies and of the others, for K = 1, K = 6 and the stochastic model](figures/stochastic_agreement.svg)
+
+- K = 1 and K = 6 overrate their own policies by about 1.0 per frame and the others by 0.26–0.28; the sampled stochastic model overrates `ppo-stoch` by 0.12 and the others by 0.10.
+- Even on its mean, the stochastic model overrates `ppo-stoch` less (+0.26) than the other policies (+0.41): a policy trained against noise does not depend on the mean model's fixed point either. In training, `ppo-stoch` looked weaker than the K = 1 policies (+1.69 in its model from hanging, against about +2.5 in theirs), because its model was honest.
 
 **It balances gently.** On the rig, with all three arms within 30° of upright, 15% of `ppo-stoch`'s actions are at the motor's ±64 limit and 55% within ±16; `ppo-k6`, `ppo-k1` and `ppo-wm3` saturate 48–57% of the time and stay within ±16 only 14–19% of it. It also has all three arms up for 9.5% of its driving, against 3.7% for `ppo-wm3`. A policy trained against noise cannot rely on the hard, exact corrections that a deterministic model rewards.
 

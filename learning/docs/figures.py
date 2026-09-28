@@ -209,26 +209,38 @@ def ranking_rig():
     save(fig, "ranking_rig")
 
 
-def ranking_scatter():
+# The stochastic model and the deterministic ones it is compared with in its section.
+COMPARED = ["rollout-k1", "rollout3-k6", "stoch-b05@0", "stoch-b05"]
+
+
+def own(row: dict, model: str) -> bool:
+    """Whether the policy was trained in `model` (a stochastic model's
+    columns at another tau, MODEL@TAU, count as the model)."""
+    return row["trained_in"] == model.split("@")[0]
+
+
+def ranking_scatter(shown=("wm3", "rollout-k1", "rollout3-k6", "rollout3-k8", "stoch-b05@0", "stoch-b05"),
+                    name="ranking_scatter", cols=3):
     rows = read("ranking_scores")
-    shown = ["wm3", "rollout-k1", "rollout3-k6", "rollout3-k8", "stoch-b05@0", "stoch-b05"]
     agreement = {r["world_model"]: r for r in read("ranking_agreement") if r["policies"] == "all"}
-    fig, axes = plt.subplots(2, 3, figsize=(8, 6), sharex=True, sharey=True)
+    lines = -(-len(shown) // cols)
+    fig, axes = plt.subplots(lines, cols, figsize=(2.7 * cols, 2.6 * lines + 0.8), sharex=True, sharey=True,
+                             squeeze=False)
     top = max(num(r[m]) for r in rows for m in shown) + 0.1
     for ax, model in zip(axes.flat, shown):
         ax.plot([0, top], [0, top], color=GREY, lw=1, ls=":")
         for r in rows:
-            own = r["trained_in"] == model
+            own_ = own(r, model)
             ax.errorbar(num(r["rig"]), num(r[model]), xerr=num(r["rig_sem"]),
-                        fmt="*" if own else "o", markersize=11 if own else 5,
-                        color=TRAINED_COLOR.get(trained(r), GREY), mec="black" if own else "none",
+                        fmt="*" if own_ else "o", markersize=11 if own_ else 5,
+                        color=TRAINED_COLOR.get(trained(r), GREY), mec="black" if own_ else "none",
                         mew=0.6, elinewidth=0.8)
         a = agreement[model]
         ax.set_title(f"{MODELS[model]}\nMMRV {num(a['mmrv']):.2f}, Spearman {num(a['spearman']):.2f}",
                      fontsize=9)
         ax.set_xlim(0, max(num(r["rig"]) for r in rows) + 0.25)
         ax.set_ylim(0, top)
-    for ax in axes[1]:
+    for ax in axes[-1]:
         ax.set_xlabel("rig")
     for ax in axes[:, 0]:
         ax.set_ylabel("world model")
@@ -237,7 +249,7 @@ def ranking_scatter():
     handles.append(plt.Line2D([], [], marker="*", ls="", markersize=11, color="white", mec="black",
                               label="trained in this world model"))
     fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=8)
-    save(fig, "ranking_scatter", rect=(0, 0.08, 1, 1))
+    save(fig, name, rect=(0, 0.1 if lines > 1 else 0.2, 1, 1))
 
 
 def ranking_agreement():
@@ -266,19 +278,19 @@ def ranking_agreement():
     save(fig, "ranking_agreement", rect=(0, 0.06, 1, 1))
 
 
-def ranking_exploitation():
+def ranking_exploitation(models=None, name="ranking_exploitation", width=9.5):
     """Each policy's overrating in each world model, its own policies starred."""
     rows = read("ranking_scores")
-    models = [m for m in MODELS if m in rows[0]]
-    fig, ax = plt.subplots(figsize=(9.5, 4.8))
+    models = models or [m for m in MODELS if m in rows[0]]
+    fig, ax = plt.subplots(figsize=(width, 4.8))
     ax.axhline(0, color=GREY, lw=1)
     for i, m in enumerate(models):
         for j, r in enumerate(rows):
-            own = r["trained_in"] == m
+            own_ = own(r, m)
             jitter = (j / (len(rows) - 1) - 0.5) * 0.5
-            ax.plot(i + jitter, num(r[m]) - num(r["rig"]), "*" if own else "o",
-                    markersize=10 if own else 4, color=TRAINED_COLOR.get(trained(r), GREY),
-                    mec="black" if own else "none", mew=0.6)
+            ax.plot(i + jitter, num(r[m]) - num(r["rig"]), "*" if own_ else "o",
+                    markersize=10 if own_ else 4, color=TRAINED_COLOR.get(trained(r), GREY),
+                    mec="black" if own_ else "none", mew=0.6)
     ax.set_xticks(range(len(models)), [MODELS[m] for m in models], rotation=35, ha="right")
     ax.set_ylabel("world model − rig")
     ax.grid(axis="x", visible=False)
@@ -286,8 +298,35 @@ def ranking_exploitation():
                for t, label in TRAINED_LABEL.items()]
     handles.append(plt.Line2D([], [], marker="*", ls="", markersize=10, color="white", mec="black",
                               label="trained in this world model"))
-    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=4)
-    save(fig, "ranking_exploitation", rect=(0, 0.1, 1, 1))
+    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=3 if len(models) < 6 else 4)
+    save(fig, name, rect=(0, 0.14 if len(models) < 6 else 0.1, 1, 1))
+
+
+def stochastic_agreement():
+    """The stochastic model against K = 1 and K = 6 over the ranked policies:
+    ranking (MMRV), accuracy (mean absolute error), and overrating of the
+    model's own policies and of the rest."""
+    rows = read("ranking_scores")
+    by = {r["world_model"]: r for r in read("ranking_agreement") if r["policies"] == "all"}
+    fig, axes = plt.subplots(1, 3, figsize=(9, 3), sharey=True)
+    y = range(len(COMPARED))
+    axes[0].barh(y, [num(by[m]["mmrv"]) for m in COMPARED], 0.6, color=BLUE)
+    axes[0].set_title("MMRV (lower is better)", fontsize=9)
+    axes[1].barh(y, [num(by[m]["mae"]) for m in COMPARED], 0.6, color=BLUE)
+    axes[1].set_title("mean absolute error", fontsize=9)
+    over = lambda m, keep: sum(num(r[m]) - num(r["rig"]) for r in rows if keep(r)) / sum(1 for r in rows if keep(r))
+    axes[2].barh([i - 0.2 for i in y], [over(m, lambda r, m=m: own(r, m)) for m in COMPARED], 0.4, color=RED,
+                 label="its own policies")
+    axes[2].barh([i + 0.2 for i in y], [over(m, lambda r, m=m: not own(r, m)) for m in COMPARED], 0.4, color=GREY,
+                 label="the other policies")
+    axes[2].axvline(0, color=GREY, lw=1)
+    axes[2].set_title("overrating (world model − rig)", fontsize=9)
+    axes[2].legend(fontsize=7, loc="lower right")
+    for ax in axes:
+        ax.grid(axis="y", visible=False)
+    axes[0].set_yticks(list(y), [MODELS[m] for m in COMPARED])
+    axes[0].invert_yaxis()
+    save(fig, "stochastic_agreement")
 
 
 def stochastic_ensemble():
@@ -328,6 +367,8 @@ def stochastic_ensemble():
 if __name__ == "__main__":
     FIGURES.mkdir(exist_ok=True)
     for draw in (profiling, batch, scaling, rollout, sim2real, ranking_rig, ranking_scatter,
-                 ranking_agreement, ranking_exploitation, stochastic_ensemble):
+                 ranking_agreement, ranking_exploitation, stochastic_ensemble, stochastic_agreement,
+                 lambda: ranking_scatter(COMPARED, "stochastic_scatter", cols=4),
+                 lambda: ranking_exploitation(COMPARED, "stochastic_exploitation", width=6)):
         draw()
     print(f"wrote {len(list(FIGURES.glob('*.svg')))} figures to {FIGURES}")
