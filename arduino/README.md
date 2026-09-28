@@ -30,14 +30,14 @@ are very quiet.
 
 ## Building and uploading
 
-`arduino-cli` lives in `~/.local/bin` — Homebrew could not build it, because
-the formula wants a newer Command Line Tools than macOS 13 has, so this is
-Arduino's official prebuilt binary.
+`arduino-cli` comes from Homebrew (`brew install arduino-cli`, then
+`arduino-cli core install arduino:avr`). The AVR compiler it installs is an
+x86 binary, so Apple silicon needs Rosetta
+(`softwareupdate --install-rosetta --agree-to-license`).
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
 arduino-cli compile --fqbn arduino:avr:uno arduino
-arduino-cli upload -p /dev/cu.usbmodem143201 --fqbn arduino:avr:uno arduino
+arduino-cli upload -p /dev/cu.usbmodem11201 --fqbn arduino:avr:uno arduino
 ```
 
 The port name can change; `arduino-cli board list` shows it.

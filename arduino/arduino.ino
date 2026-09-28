@@ -36,8 +36,10 @@ const uint8_t PIN_DIR = 8;  // DIR1 jumper on D8
 const uint8_t CHANNEL2_PWM_PINS[] = {6, 10, 11};
 
 // Cap on |duty|, in the same 1/255 units the bytes use. Duty 60 felt violent
-// with the previous driver, so approach this cap gradually.
-const int8_t LIMIT = 80;
+// with the previous driver, so approach this cap gradually. Trained policies
+// use up to 64; 96 leaves room for collect's exploration bursts
+// (--perturb-limit 96), which are brief.
+const int8_t LIMIT = 96;
 
 // Rated for 20 kHz at full current, and at the edge of hearing. Duty 30 is
 // then a ~6 us pulse, which this shield follows; the BTS7960 did not.
