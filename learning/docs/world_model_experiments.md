@@ -1,6 +1,6 @@
 # Double pendulum world model experiments
 
-As of 2026-09-27, after three policy ranking sessions on the rig and the first stochastic world model. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
+As of 2026-09-28, after three policy ranking sessions on the rig, the first stochastic world model, and three rounds of the world model / policy / data loop. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
 
 ## Summary
 
@@ -11,6 +11,7 @@ A stochastic world model, sampled in imagination, trains the best policy so far 
 - **Open-loop accuracy is not what policies need.** One-step models overrate a balancing policy; long-rollout models underrate it, because they learn to predict the average future.
 - **Policies exploit a deterministic model they train in.** PPO finds its errors: K = 8, K = 6 and K = 1 overrate their own policies by 0.7–0.8 per frame more than the others, wm3 by 0.4. A second seed of a model shares its errors, so it is no independent check.
 - **Sampling removes the optimism and the exploitation.** The stochastic model sampled overrates policies by 0.10 on average and its own by no more; on its mean, it overrates them by 0.40 like the deterministic models. Its policy balances with small corrections, where the others saturate the motor half the time.
+- **Iterating on the rig pays once.** One round of exploration bursts, a retrained stochastic model and actions to ±96 took the rig score from +1.81 to +2.08 and doubled the time with all three arms up; two more rounds without bursts held it there.
 - **Choose world models with the ranking** (`imagination.ranking`), not with 1 − R² or a handful of policies.
 
 ## Setup
@@ -171,14 +172,52 @@ Each policy's overrating in the four models (predicted − real), stars marking 
 
 **It balances gently.** On the rig, with all three arms within 30° of upright, 15% of `ppo-stoch`'s actions are at the motor's ±64 limit and 55% within ±16; `ppo-k6`, `ppo-k1` and `ppo-wm3` saturate 48–57% of the time and stay within ±16 only 14–19% of it. It also has all three arms up for 9.5% of its driving, against 3.7% for `ppo-wm3`. A policy trained against noise cannot rely on the hard, exact corrections that a deterministic model rewards.
 
+## Iterating world model, policy and data
+
+Three rounds of collecting with the latest policy, retraining the stochastic world model on everything, and training a policy in it (2026-09-28, unattended) raised the greedy rig score from +1.81 to +2.04–2.08, all in the first round. The policies were given actions to ±96 instead of ±64, and use them: the outer arm is up 25–30% of the time, against 13% for `ppo-stoch`.
+
+**The loop:**
+- **Collection 0:** `ppo-stoch`, sampled, with exploration bursts (`collect --perturb-rate 0.02`): on 2% of frames a burst of 3–8 frames starts, adding one offset, uniform in ±48, to every action in it, clipped to ±96 (the motor board's cap, raised from 80). 11% of driving frames are perturbed; the data shows the model what larger and opposing actions do in the states the policy visits. 5 minutes of validation, then 60 of training.
+- **World model `stoch-itN`:** `stoch-b05`'s recipe (512 × 3, one-step, β-NLL 0.5, 50k steps) on the original training set, the ranking recordings (about 90 minutes) and collections 0 to N − 1; each collection's 5-minute recording is a validation set.
+- **Policy `ppo-stoch-itN`:** `ppo-stoch`'s recipe (lr 1e-3, 5,000 iterations, speed penalty) with 13 actions from −96 to 96, in `stoch-itN` sampled; checked in imagination for arm speeds far above `ppo-stoch`'s before it touches the rig.
+- A greedy rig test with the ranking protocol (2 × 2 minutes, 14 drives), then **collection N**: `ppo-stoch-itN`, sampled, without bursts, 5 + 60 minutes.
+
+Each round took about 2½ hours: an hour of collection, 15 minutes of world model and 40 of policy on AWS.
+
+**On the rig**, greedy (black), and each world model's forecast of each policy, sampled, from the same starts:
+
+![Greedy rig score of ppo-stoch and the three loop policies, with each loop world model's forecast](figures/loop_rig.svg)
+
+- `ppo-stoch-it1` scores +2.08 ± 0.03 against +1.81 for `ppo-stoch`; `ppo-stoch-it2` and `it3` hold that level (+2.04 and +2.07), no further gain.
+- Every world model forecasts every policy within about 0.1 (bias +0.05 over the four), its own included: the loop's exploitation gaps are +0.01 to +0.07.
+
+**What changed on the rig**, over the drives of each greedy test (arms within 30° of upright; actions beyond ±64):
+
+| policy | outer arm up | all three up | actions beyond ±64 | while all three up | at ±96 |
+| --- | --- | --- | --- | --- | --- |
+| `ppo-stoch` | 13% | 9.5% | — | — | — |
+| `ppo-stoch-it1` | 30% | 25% | 23% | 9% | 14% |
+| `ppo-stoch-it2` | 25% | 22% | 22% | 13% | 13% |
+| `ppo-stoch-it3` | 30% | 27% | 20% | 9% | 13% |
+
+The first two arms were already up most of the time; the gain is the outer arm, and the policies reach past the old ±64 in a fifth of their driving.
+
+**The world models on each collection's validation recording**, filled where the model trained on that collection (`world_model.compare`, the same windows for every model):
+
+![One-step NLL, 1 − R² at 16 frames and CRPS at 64 frames from upright for each loop world model on each collection's validation recording](figures/loop_world_models.svg)
+
+- **The one-step likelihood improves on every new collection, most with the first round.** `stoch-it1`, with the burst collection and the ranking recordings, gains 0.07–0.09 per element on collections 0 to 2, including the two it never trained on; adding a collection then gains a little more on its own recording (collection 2: −1.209 to −1.228).
+- **Open loop, the rest barely moves.** 1 − R² at 16 frames improves on the burst collection (0.039 to 0.030) but not on the later ones, where it drifts up (collection 1: 0.039 to 0.047); from upright at 64 frames the CRPS stays above copying's on the new policies' data (1.6), which balance more and so are harder to foresee 0.5 s ahead.
+- Every model trains 50k steps whatever the data, so as the data grows from 5 to almost 10 hours each recording is seen less: the models may simply be undertrained for it.
+
 ## Costs and next steps
 
-The program used roughly 20–25 GPU instance-hours, an estimated $20, and left about 9 GB of runs on S3, about $0.20 a month.
+The program used roughly 35–40 GPU instance-hours, an estimated $30, and left about 9 GB of runs on S3, about $0.20 a month.
 
-1. **Improve the policy in the stochastic model** (under way, `cloud/queues/cloud-12.txt`): longer training (10k and 20k iterations), a lower learning rate, a second seed, a wider spread (`tau` 1.5), a longer horizon (γ 0.998), a wider policy and upright starts, each scored on 16 sampled rollouts. The model's forecasts are honest, so it can choose among them before the rig confirms.
-2. **Calibrate the ensemble**: its spread is 0.75–0.85 of its error; `tau` above 1, or training the variance on rollouts, would widen it.
-3. **Collect with `ppo-stoch`**, sampled: it balances more than any earlier policy, so its data covers the states the next world model most needs; with the ranking recordings (about 90 minutes, 20 policies) as well.
-4. **Stochastic rollout training**: rollout-trained models were the most accurate open loop; trained on the NLL of their own sampled rollouts, they might keep that accuracy without the averaging.
+1. **Train the world model longer as the data grows**, or larger: the loop's models get no more steps for nearly twice the data, and their open-loop accuracy on the new policies' data stalls.
+2. **Continue the loop with exploration**: the gain came with the burst collection and the wider actions; later rounds, without bursts, added little. Bursts around the new policies, and wider ones, are the next data to try.
+3. **Policy recipe**: in `stoch-b05`, a second seed, a wider policy, upright starts, a lower learning rate and γ 0.998 all matched `ppo-stoch` in imagination (+1.90 to +1.93); only longer training gained (+2.01 at 20k iterations), partly in that model only; a wider spread (`tau` 1.5) did worse (+1.71). None was tried on the rig.
+4. **Calibrate the ensemble**: its spread is 0.75–0.85 of its error; `tau` above 1, or training the variance on rollouts, would widen it.
 5. **Extend the ranking** with each new policy and world model: `imagination.ranking imagine` pools every session's episodes, and `agreement` rescores without new rollouts.
 
 The code is in `learning/` (main), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`.

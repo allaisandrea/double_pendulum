@@ -19,7 +19,12 @@ agreement: imagination.ranking agreement of ranking_scores.csv
 (ranking_agreement.csv), without imagining again; ranking ends with it,
 so only a change of metrics needs it alone.
 
-sim2real, stochastic and ranking need the world models and policies in runs/ and the
+loop: world_model.compare of the loop's world models on each collection's
+validation recording (loop_world_models.csv, loop_world_models_upright.csv),
+and imagination.ranking imagine of its policies' greedy rig tests
+(loop_scores.csv).
+
+sim2real, stochastic, ranking and loop need the world models and policies in runs/ and the
 recordings in ../recordings; profile needs AWS credentials (profile
 andrea-personal).
 """
@@ -49,6 +54,19 @@ RANKING_SESSIONS = [f"../recordings/ranking-{m}.tsv" for m in [
     "1790523610-seed0", "1790525401-seed1",
     "1790541846-seed0", "1790543406-seed0", "1790544933-seed0", "1790545071-seed1",
     "1790548265-seed0", "1790548404-seed1"]]
+# The world model / policy / data loop of 2026-09-28: collection k's
+# 5-minute validation recording, its policy, and the world model trained
+# with it first; the greedy rig tests of each iteration's policy.
+LOOP = [("1790611634", "ppo-stoch, with bursts", "stoch-it1"),
+        ("1790619211", "ppo-stoch-it1", "stoch-it2"),
+        ("1790626779", "ppo-stoch-it2", "stoch-it3")]
+LOOP_MODELS = ["stoch-b05", "stoch-it1", "stoch-it2", "stoch-it3"]
+LOOP_GREEDY = [f"../recordings/ranking-{m}.tsv" for m in [
+    "1790548265-seed0", "1790548404-seed1",  # ppo-stoch, session 3
+    "1790618903-seed0", "1790619056-seed1",  # ppo-stoch-it1
+    "1790626471-seed0", "1790626625-seed1",  # ppo-stoch-it2
+    "1790634883-seed0", "1790635036-seed1",  # ppo-stoch-it3
+]]
 # The validation recordings the stochastic models are compared on, as
 # world_model.train names them: val_policy_wm3 and val_random_walk.
 STOCHASTIC_VAL = ["1790464558", "1790281442"]
@@ -112,8 +130,20 @@ def agreement():
            "--csv", str(RESULTS / "ranking_agreement.csv"))
 
 
+def loop():
+    """The loop's world models on every collection's validation recording,
+    and its policies' greedy rig tests scored in each of them."""
+    models = [f"runs/world_model/{m}/model.pt" for m in LOOP_MODELS]
+    vals = [v for v, _, _ in LOOP] + STOCHASTIC_VAL
+    python("world_model.compare", *models, "--val", *vals, "--csv", str(RESULTS / "loop_world_models.csv"))
+    python("world_model.compare", *models, "--val", *vals, "--upright",
+           "--csv", str(RESULTS / "loop_world_models_upright.csv"))
+    python("imagination.ranking", "imagine", *LOOP_GREEDY, "--world-models", *models,
+           "--scores", str(RESULTS / "loop_scores.csv"))
+
+
 STEPS = {"wandb": wandb, "profile": profile, "sim2real": sim2real, "stochastic": stochastic, "ranking": ranking,
-         "agreement": agreement}
+         "agreement": agreement, "loop": loop}
 
 
 def main():

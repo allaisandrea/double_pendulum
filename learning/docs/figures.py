@@ -364,11 +364,69 @@ def stochastic_ensemble():
     save(fig, "stochastic_ensemble")
 
 
+# The loop: each collection's validation recording, with its label, and
+# the first world model trained on its collection.
+LOOP_VALS = [("1790611634", "collection 0: ppo-stoch + bursts", "stoch-it1"),
+             ("1790619211", "collection 1: ppo-stoch-it1", "stoch-it2"),
+             ("1790626779", "collection 2: ppo-stoch-it2", "stoch-it3"),
+             ("1790464558", "val_policy_wm3 (ppo-wm3)", None)]
+LOOP_MODELS = ["stoch-b05", "stoch-it1", "stoch-it2", "stoch-it3"]
+
+
+def loop_world_models():
+    """Each loop world model on each collection's validation recording;
+    filled markers where the model trained on that collection."""
+    rows = {(r["checkpoint"], r["recording"]): r for r in read("loop_world_models")}
+    upright = {(r["checkpoint"], r["recording"]): r for r in read("loop_world_models_upright")}
+    colors = [RED, ORANGE, GREEN, GREY]
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.4))
+    panels = [(rows, "nll", "one-step NLL per element"), (rows, "one_minus_r2/h016", "1 − R², 16 frames"),
+              (upright, "ensemble/crps/h064", "CRPS / copy-last, 64 frames, from upright")]
+    x = range(len(LOOP_MODELS))
+    for ax, (table, key, title) in zip(axes, panels):
+        for (val, label, first), color in zip(LOOP_VALS, colors):
+            ys = [num(table[m, val][key]) for m in LOOP_MODELS]
+            ax.plot(x, ys, "-", color=color, label=label)
+            trained = [first is not None and LOOP_MODELS.index(m) >= LOOP_MODELS.index(first) for m in LOOP_MODELS]
+            for i, (y, t) in enumerate(zip(ys, trained)):
+                ax.plot(i, y, "o", color=color, mfc=color if t else "white", markersize=6)
+        ax.set_xticks(list(x), ["b05", "it1", "it2", "it3"])
+        ax.set_xlabel("world model")
+        ax.set_title(title, fontsize=9)
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles.append(plt.Line2D([], [], marker="o", ls="", color="black", mfc="black", label="trained on the collection"))
+    handles.append(plt.Line2D([], [], marker="o", ls="", color="black", mfc="white", label="not trained on it"))
+    fig.legend(handles=handles, loc="lower center", ncol=3, fontsize=8)
+    save(fig, "loop_world_models", rect=(0, 0.16, 1, 1))
+
+
+def loop_rig():
+    """Each loop policy's greedy rig score, and each world model's forecast of it."""
+    rows = {r["policy"]: r for r in read("loop_scores")}
+    policies = [p for p in ["ppo-stoch", "ppo-stoch-it1", "ppo-stoch-it2", "ppo-stoch-it3"] if p in rows]
+    fig, ax = plt.subplots(figsize=(7, 3.4))
+    width = 0.8 / (1 + len(LOOP_MODELS))
+    for i, p in enumerate(policies):
+        r = rows[p]
+        ax.bar(i - 0.4 + width / 2, num(r["rig"]), width, yerr=num(r["rig_sem"]), color="black", capsize=2,
+               label="rig" if i == 0 else None)
+        for j, (m, color) in enumerate(zip(LOOP_MODELS, [GREY, BLUE, GREEN, PURPLE])):
+            ax.bar(i - 0.4 + width * (j + 1.5), num(r[m]), width, color=color,
+                   label=f"{m}, sampled" if i == 0 else None)
+    ax.set_xticks(range(len(policies)), policies)
+    ax.set_ylim(1.4, None)
+    ax.set_ylabel("sum of cosines per frame (greedy)")
+    ax.legend(fontsize=7, ncol=3, loc="upper left")
+    ax.grid(axis="x", visible=False)
+    save(fig, "loop_rig")
+
+
 if __name__ == "__main__":
     FIGURES.mkdir(exist_ok=True)
     for draw in (profiling, batch, scaling, rollout, sim2real, ranking_rig, ranking_scatter,
                  ranking_agreement, ranking_exploitation, stochastic_ensemble, stochastic_agreement,
                  lambda: ranking_scatter(COMPARED, "stochastic_scatter", cols=4),
-                 lambda: ranking_exploitation(COMPARED, "stochastic_exploitation", width=6)):
+                 lambda: ranking_exploitation(COMPARED, "stochastic_exploitation", width=6),
+                 loop_world_models, loop_rig):
         draw()
     print(f"wrote {len(list(FIGURES.glob('*.svg')))} figures to {FIGURES}")

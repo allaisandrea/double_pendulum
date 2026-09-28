@@ -1,0 +1,5 @@
+policy,trained_in,seen,episodes,rig,rig_sem,stoch-b05,stoch-it1,stoch-it2,stoch-it3
+ppo-stoch,stoch-b05,False,14,1.8098,0.0352,1.9267,1.8578,1.8268,1.8531
+ppo-stoch-it1,stoch-it1,False,14,2.0817,0.0314,2.1322,2.1711,2.1172,2.1163
+ppo-stoch-it2,stoch-it2,False,14,2.0391,0.0225,2.1017,2.0931,2.1312,2.1236
+ppo-stoch-it3,stoch-it3,False,14,2.0685,0.0266,2.0967,2.0829,2.1146,2.1346
