@@ -104,6 +104,10 @@ print('policy seconds per phase over 100 iterations:', {k: round(v, 1) for k, v 
         ;;
     policy)
         WM=$(uv run python -c "import tomllib; print(tomllib.load(open('$CONFIG', 'rb'))['world_model'])")
+        # A --set world_model=... among the trainer's arguments names another.
+        for a in "${ARGS[@]}"; do
+            case $a in world_model=*) WM=${a#world_model=}; WM=${WM//\"/} ;; esac
+        done
         aws s3 sync "$S3_ROOT/$(dirname "$WM")" "$(dirname "$WM")" --only-show-errors || exit 1
         [ -f "$WM" ] || { echo "no world model at $S3_ROOT/$WM"; exit 1; }
         train imagination.train
