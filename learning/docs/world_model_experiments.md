@@ -1,6 +1,6 @@
 # Double pendulum world model experiments
 
-As of 2026-09-28, after three policy ranking sessions on the rig, the first stochastic world model, and three rounds of the world model / policy / data loop. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
+As of 2026-09-28, after three policy ranking sessions on the rig, the first stochastic world model, and three rounds of the world model / policy / data loop. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). The code is in `learning/` (main), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`. An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
 
 ## Summary
 
@@ -209,15 +209,3 @@ The first two arms were already up most of the time; the gain is the outer arm, 
 - **The one-step likelihood improves on every new collection, most with the first round.** `stoch-it1`, with the burst collection and the ranking recordings, gains 0.07–0.09 per element on collections 0 to 2, including the two it never trained on; adding a collection then gains a little more on its own recording (collection 2: −1.209 to −1.228).
 - **Open loop, the rest barely moves.** 1 − R² at 16 frames improves on the burst collection (0.039 to 0.030) but not on the later ones, where it drifts up (collection 1: 0.039 to 0.047); from upright at 64 frames the CRPS stays above copying's on the new policies' data (1.6), which balance more and so are harder to foresee 0.5 s ahead.
 - Every model trains 50k steps whatever the data, so as the data grows from 5 to almost 10 hours each recording is seen less: the models may simply be undertrained for it.
-
-## Costs and next steps
-
-The program used roughly 35–40 GPU instance-hours, an estimated $30, and left about 9 GB of runs on S3, about $0.20 a month.
-
-1. **Train the world model longer as the data grows**, or larger: the loop's models get no more steps for nearly twice the data, and their open-loop accuracy on the new policies' data stalls.
-2. **Continue the loop with exploration**: the gain came with the burst collection and the wider actions; later rounds, without bursts, added little. Bursts around the new policies, and wider ones, are the next data to try.
-3. **Policy recipe**: in `stoch-b05`, a second seed, a wider policy, upright starts, a lower learning rate and γ 0.998 all matched `ppo-stoch` in imagination (+1.90 to +1.93); only longer training gained (+2.01 at 20k iterations), partly in that model only; a wider spread (`tau` 1.5) did worse (+1.71). None was tried on the rig.
-4. **Calibrate the ensemble**: its spread is 0.75–0.85 of its error; `tau` above 1, or training the variance on rollouts, would widen it.
-5. **Extend the ranking** with each new policy and world model: `imagination.ranking imagine` pools every session's episodes, and `agreement` rescores without new rollouts.
-
-The code is in `learning/` (main), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`.
