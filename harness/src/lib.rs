@@ -11,6 +11,7 @@ pub mod latest;
 pub mod mlp_policy;
 pub mod mov;
 pub mod overlay_tag;
+pub mod perturb;
 pub mod policy;
 pub mod serial;
 #[cfg(test)]

@@ -19,6 +19,7 @@
 //!
 //! [`TrainedPolicy`] drives the motor with one, in `collect`.
 
+use crate::perturb::Perturbation;
 use crate::policy::{splitmix64, wait_until, DutyCycle, Policy, Step};
 use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
@@ -274,27 +275,36 @@ impl MlpPolicy {
 /// which leave the pendulum hanging for the next swing-up. It takes the
 /// likeliest action, or with `sample_seed` draws one from the policy's
 /// distribution, from a hash of the seed and the frame number, so a run
-/// can be repeated from its seed.
+/// can be repeated from its seed. With `perturbation`, bursts of a random
+/// offset are added to its actions while driving, for exploration.
 pub struct TrainedPolicy {
     pub net: MlpPolicy,
     pub latency: Duration,
     pub duty: DutyCycle,
     pub sample_seed: Option<u64>,
+    pub perturbation: Option<Perturbation>,
+    /// Whether the last action was perturbed.
+    pub last_perturbed: bool,
 }
 
 impl TrainedPolicy {
-    fn decide(&self, history: &[Step]) -> Result<i8> {
+    /// The action for the newest frame, and whether it was perturbed.
+    fn decide(&self, history: &[Step]) -> Result<(i8, bool)> {
         let now = &history[0];
         if self.duty.resting(now.t) {
-            return Ok(0);
+            return Ok((0, false));
         }
-        match self.sample_seed {
-            None => self.net.greedy(history),
+        let action = match self.sample_seed {
+            None => self.net.greedy(history)?,
             Some(seed) => {
                 let bits = splitmix64(seed ^ splitmix64(now.frame)) >> 11;
-                self.net.sample(history, bits as f64 / (1u64 << 53) as f64)
+                self.net.sample(history, bits as f64 / (1u64 << 53) as f64)?
             }
-        }
+        };
+        Ok(match &self.perturbation {
+            Some(p) => p.apply(now.frame, action),
+            None => (action, false),
+        })
     }
 }
 
@@ -307,9 +317,14 @@ impl Policy for TrainedPolicy {
         let deadline = Instant::now() + self.latency;
         // collect always hands over `history_length` frames, newest first,
         // which reach back far enough; anything else is a bug there.
-        let action = self.decide(history).expect("a history the policy can read");
+        let (action, perturbed) = self.decide(history).expect("a history the policy can read");
+        self.last_perturbed = perturbed;
         wait_until(deadline);
         action
+    }
+
+    fn perturbed(&self) -> bool {
+        self.last_perturbed
     }
 
     fn describe(&self) -> String {
@@ -317,8 +332,11 @@ impl Policy for TrainedPolicy {
             None => "likeliest action".to_string(),
             Some(_) => "actions sampled from a hash of seed and frame".to_string(),
         };
+        let perturb = self
+            .perturbation
+            .map_or(String::new(), |p| format!("; perturbed: {}", p.describe()));
         format!(
-            "{}; {how}; zero while resting; sent {} ms after the call",
+            "{}; {how}{perturb}; zero while resting; sent {} ms after the call",
             self.net.describe(),
             self.latency.as_secs_f64() * 1e3
         )
@@ -397,6 +415,8 @@ mod tests {
                 rest: Duration::from_secs(1),
             },
             sample_seed,
+            perturbation: None,
+            last_perturbed: false,
         }
     }
 
@@ -421,6 +441,7 @@ mod tests {
             "{took:?}"
         );
         assert_eq!(a, p.net.greedy(&history).unwrap());
+        assert!(!p.perturbed());
         let resting = history_at(Duration::from_millis(1500), 100);
         assert_eq!(p.act(&resting), 0);
     }
@@ -430,10 +451,10 @@ mod tests {
         let p = trained(Some(7), Duration::ZERO);
         let q = trained(Some(7), Duration::ZERO);
         let actions: Vec<i8> = (100..400)
-            .map(|f| p.decide(&history_at(Duration::ZERO, f)).unwrap())
+            .map(|f| p.decide(&history_at(Duration::ZERO, f)).unwrap().0)
             .collect();
         let again: Vec<i8> = (100..400)
-            .map(|f| q.decide(&history_at(Duration::ZERO, f)).unwrap())
+            .map(|f| q.decide(&history_at(Duration::ZERO, f)).unwrap().0)
             .collect();
         assert_eq!(actions, again, "the same seed and frames give the same actions");
         let distinct: std::collections::HashSet<_> = actions.iter().collect();
@@ -443,6 +464,28 @@ mod tests {
         let h = history_at(Duration::ZERO, 100);
         assert!(p.net.levels.contains(&p.net.sample(&h, 0.0).unwrap()));
         assert!(p.net.levels.contains(&p.net.sample(&h, 0.999_999).unwrap()));
+    }
+
+    #[test]
+    fn perturbations_offset_driving_actions_only() {
+        let mut p = trained(None, Duration::ZERO);
+        p.perturbation = Some(Perturbation {
+            seed: 2,
+            rate: 1.0,
+            min_frames: 8,
+            max_frames: 8,
+            max_offset: 48,
+            limit: 96,
+        });
+        let driving = history_at(Duration::from_millis(500), 100);
+        let plain = p.net.greedy(&driving).unwrap();
+        let offset = p.perturbation.unwrap().offset(100).unwrap();
+        let a = p.act(&driving);
+        assert!(p.perturbed());
+        assert_eq!(a as i16, (plain as i16 + offset).clamp(-96, 96));
+        let resting = history_at(Duration::from_millis(1500), 100);
+        assert_eq!(p.act(&resting), 0);
+        assert!(!p.perturbed(), "no bursts while resting");
     }
 
     #[test]

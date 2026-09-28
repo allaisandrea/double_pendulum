@@ -23,6 +23,7 @@ use harness::constants::{HFOV_DEG, TAG_FAMILY, TAG_SIZE_M};
 use harness::latest::{Latest, Take};
 use harness::governor::Governor;
 use harness::mlp_policy::{MlpPolicy, TrainedPolicy};
+use harness::perturb::Perturbation;
 use harness::policy::{DutyCycle, Policy, RandomWalkPolicy, Step};
 use harness::table::{self, FrameRow, Table, TagRow};
 use harness::tag_detector::{Intrinsics, TagDetector};
@@ -56,6 +57,24 @@ struct Args {
     /// rather than taking the likeliest, for varied training data
     #[arg(long)]
     policy_sample: bool,
+
+    /// With --policy: start a burst of exploration on each frame with this
+    /// probability; a burst adds one random offset to the policy's actions
+    /// for --perturb-frames frames. 0 never perturbs
+    #[arg(long, default_value_t = 0.0)]
+    perturb_rate: f64,
+
+    /// Bursts last MIN..=MAX camera frames, e.g. 3..=8 (24 to 64 ms)
+    #[arg(long, num_args = 2, value_names = ["MIN", "MAX"], default_values_t = [3u64, 8])]
+    perturb_frames: Vec<u64>,
+
+    /// A burst's offset is uniform in -N..=N
+    #[arg(long, default_value_t = 48, value_parser = clap::value_parser!(u8).range(0..=127))]
+    perturb_offset: u8,
+
+    /// Perturbed actions are clipped to ±this
+    #[arg(long, default_value_t = 96, value_parser = clap::value_parser!(u8).range(1..=127))]
+    perturb_limit: u8,
 
     /// Brake the motor (send 0 in place of the policy's action) while the arm
     /// it drives turns faster than this, in revolutions per second; 0 never
@@ -364,6 +383,15 @@ fn make_policy(args: &Args) -> Result<Made> {
         args.policy.is_some() || !args.policy_sample,
         "--policy-sample needs --policy"
     );
+    anyhow::ensure!(
+        (0.0..=1.0).contains(&args.perturb_rate) && (args.policy.is_some() || args.perturb_rate == 0.0),
+        "--perturb-rate is a probability, and needs --policy"
+    );
+    let (min_frames, max_frames) = (args.perturb_frames[0], args.perturb_frames[1]);
+    anyhow::ensure!(
+        1 <= min_frames && min_frames <= max_frames,
+        "--perturb-frames needs 1 <= MIN <= MAX"
+    );
     let seed = args.seed.unwrap_or_else(rand::random);
     let latency = Duration::from_secs_f64(args.policy_latency_ms / 1e3);
     let duty = DutyCycle {
@@ -377,10 +405,21 @@ fn make_policy(args: &Args) -> Result<Made> {
                 latency,
                 duty,
                 sample_seed: args.policy_sample.then_some(seed),
+                perturbation: (args.perturb_rate > 0.0).then_some(Perturbation {
+                    // Independent of the sampled actions' draws.
+                    seed: seed ^ 0x5045_5254_5552_4221,
+                    rate: args.perturb_rate,
+                    min_frames,
+                    max_frames,
+                    max_offset: args.perturb_offset,
+                    limit: args.perturb_limit,
+                }),
+                last_perturbed: false,
             }),
             vec![
                 ("policy_file".to_string(), path.display().to_string()),
                 ("policy_sample".to_string(), args.policy_sample.to_string()),
+                ("perturb_rate".to_string(), args.perturb_rate.to_string()),
             ],
         ),
         None => (
@@ -559,7 +598,7 @@ fn policy_loop(
         poses: d.tags.map(|t| t.map(|t| t.pose)),
         action,
     };
-    let row = |d: Detected, action: i8, times: Option<[Duration; 3]>, governed: bool| FrameRow {
+    let row = |d: Detected, action: i8, times: Option<[Duration; 3]>, governed: bool, perturbed: bool| FrameRow {
         frame: d.frame,
         t_capture: ns(d.t_capture),
         t_arrival: ns(d.t_arrival),
@@ -572,6 +611,7 @@ fn policy_loop(
         t_sent: times.map(|t| ns(t[2])),
         action,
         governed,
+        perturbed,
     };
     // The frames before the newest, oldest first, each with the action in
     // effect after it.
@@ -596,14 +636,14 @@ fn policy_loop(
             let newest = waiting.pop().expect("at least the first");
             for d in waiting {
                 remember(&mut history, step(&d, Some(current)));
-                let _ = rows.send(row(d, current, None, false));
+                let _ = rows.send(row(d, current, None, false, false));
             }
 
             if history.len() < length - 1 {
                 // The start of the recording: this frame only fills the
                 // history, and the startup 0 stays in effect.
                 remember(&mut history, step(&newest, Some(current)));
-                let _ = rows.send(row(newest, current, None, false));
+                let _ = rows.send(row(newest, current, None, false, false));
                 continue;
             }
 
@@ -616,6 +656,7 @@ fn policy_loop(
                 })
                 .collect();
             let asked = policy.act(&input[..policy.history_length()]);
+            let perturbed = policy.perturbed();
             let (action, governed) = match &governor {
                 Some(g) => g.limit(&input, asked),
                 None => (asked, false),
@@ -630,6 +671,7 @@ fn policy_loop(
                 action,
                 Some([t_policy_start, t_policy_done, t_sent]),
                 governed,
+                perturbed,
             ));
         }
         Ok(())
@@ -711,6 +753,8 @@ struct Stats {
     acted: u64,
     /// Frames the governor sent 0 on in place of the policy's action.
     governed: u64,
+    /// Frames whose action was perturbed for exploration.
+    perturbed: u64,
     /// Frames not acted on because the policy was busy, not counting the
     /// startup frames that only fill its history.
     skipped: u64,
@@ -739,6 +783,7 @@ impl Stats {
             (Some(start), Some(done), Some(sent)) => {
                 self.acted += 1;
                 self.governed += u64::from(r.governed);
+                self.perturbed += u64::from(r.perturbed);
                 self.wait_ms.push(ms(r.t_detected, start));
                 self.policy_ms.push(ms(start, done));
                 self.delay_ms.push(ms(r.t_capture, sent));
@@ -803,6 +848,13 @@ impl Stats {
             self.governed,
             100.0 * self.governed as f64 / self.acted.max(1) as f64
         );
+        if self.perturbed > 0 {
+            eprintln!(
+                "  perturbed: {} actions ({:.1}%) offset for exploration",
+                self.perturbed,
+                100.0 * self.perturbed as f64 / self.acted.max(1) as f64
+            );
+        }
         eprintln!(
             "  queued after detection: {}",
             quantiles(&mut self.wait_ms.clone())

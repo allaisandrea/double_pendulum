@@ -36,6 +36,11 @@ pub trait Policy: Send {
 
     /// A one-line description, recorded in the recording's metadata.
     fn describe(&self) -> String;
+
+    /// Whether the last action `act` returned was perturbed for exploration.
+    fn perturbed(&self) -> bool {
+        false
+    }
 }
 
 /// Alternating active and rest periods, in time since t0.
