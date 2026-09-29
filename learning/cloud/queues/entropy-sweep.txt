@@ -1,0 +1,6 @@
+# The entropy bonus on the annealed recipe (wm-s256-anneal.toml): 0.003,
+# 0.03 and 0.1, against 0.01, which is ppo-s256-anneal0-5k. At the commit
+# with the recipe's config.
+policy ppo-s256-ent0003 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge --code 89ddc1d0dcb8cef07392fa5555f69751cb9dc300 -- --set ent_coef=0.003
+policy ppo-s256-ent003 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge --code 89ddc1d0dcb8cef07392fa5555f69751cb9dc300 -- --set ent_coef=0.03
+policy ppo-s256-ent01 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge --code 89ddc1d0dcb8cef07392fa5555f69751cb9dc300 -- --set ent_coef=0.1
