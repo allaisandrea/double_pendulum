@@ -30,7 +30,7 @@ iter_NNNNNN.pt checkpoint), its actor and critic, with the new run's
 config, which must give it the same inputs and actions; the optimiser,
 schedule and environments start afresh. With `tau_start` and `tau_end`,
 a stochastic world model's tau moves linearly from one to the other over
-the run's iterations; evaluations use `tau_end`.
+the run's iterations, for training and evaluation alike.
 
 Every `checkpoint_every` iterations, and at the end, the whole training
 state goes to `runs/policy/<name>/checkpoints/iter_NNNNNN.pt`, and a copy
@@ -169,8 +169,6 @@ def main(argv=None):
     tau_start, tau_end = cfg.get("tau_start"), cfg.get("tau_end")
     if (tau_start is None) != (tau_end is None):
         raise SystemExit("tau_start and tau_end go together")
-    if tau_end is not None:
-        eval_env.tau = tau_end
     starts = Starts(Windows(recordings, env.history, device), hanging, cfg.get("upright_start_fraction", 0.0))
     T, N, gamma = cfg["rollout_steps"], cfg["num_envs"], cfg["gamma"]
     reset_p = (1 - gamma) / cfg["reset_horizons"]
@@ -259,7 +257,7 @@ def main(argv=None):
 
     for it in range(first, cfg["iterations"] + 1):
         if tau_start is not None:
-            env.tau = tau_start + (tau_end - tau_start) * (it - 1) / max(1, cfg["iterations"] - 1)
+            env.tau = eval_env.tau = tau_start + (tau_end - tau_start) * (it - 1) / max(1, cfg["iterations"] - 1)
         with timer("rollout"), torch.no_grad():
             # The iteration's resets, drawn at once on the CPU, so that no
             # frame waits on the device to learn which environments reset.
