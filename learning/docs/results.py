@@ -22,6 +22,10 @@ agreement: imagination.ranking agreement of ranking_scores.csv
 (ranking_agreement.csv), without imagining again; ranking ends with it,
 so only a change of metrics needs it alone.
 
+anneal: imagination.ranking imagine of every greedy rig test in the 256 x 3
+world model, sampled and on its mean, and in stoch-it5 (s256_scores.csv,
+s256_agreement.csv), and each policy's time upright and largest actions
+on the rig (rig_stats.csv).
 loop: world_model.compare of the loop's world models on each collection's
 validation recording (loop_world_models.csv, loop_world_models_upright.csv),
 and imagination.ranking imagine of its policies' greedy rig tests
@@ -70,6 +74,19 @@ LOOP_GREEDY = [f"../recordings/ranking-{m}.tsv" for m in [
     "1790626471-seed0", "1790626625-seed1",  # ppo-stoch-it2
     "1790634883-seed0", "1790635036-seed1",  # ppo-stoch-it3
 ]]
+# Greedy rig tests of the 256 x 3 model's policies (2026-09-29): the one
+# trained at tau 1, at tau 0, the anneal from tau 0's iteration 3000 (and its
+# iteration 1750), and the anneals from scratch over 5,000 and 8,000.
+S256_GREEDY = [f"../recordings/ranking-{m}.tsv" for m in [
+    "1790712456-seed0", "1790712595-seed1",  # ppo-s256-anneal@1750
+    "1790712851-seed0", "1790712989-seed1",  # ppo-s256-mean
+    "1790713181-seed0", "1790713319-seed1",  # ppo-s256
+    "1790713681-seed0", "1790713820-seed1",  # ppo-s256-anneal
+    "1790714289-seed0", "1790714427-seed1",  # ppo-s256-anneal0-5k
+    "1790714695-seed0", "1790714833-seed1",  # ppo-s256-anneal0-8k
+]]
+# The loop's fourth policy's greedy test.
+IT4_GREEDY = ["../recordings/ranking-1790644654-seed0.tsv", "../recordings/ranking-1790644807-seed1.tsv"]
 # The validation recordings the stochastic models are compared on, as
 # world_model.train names them: val_policy_wm3 and val_random_walk.
 STOCHASTIC_VAL = ["1790464558", "1790281442"]
@@ -151,8 +168,57 @@ def loop():
            "--scores", str(RESULTS / "loop_scores.csv"))
 
 
+def anneal():
+    """Every greedy rig test, scored in the 256 x 3 world model sampled and
+    on its mean (and the 512 x 3 trained on the same data), and each
+    policy's time with each arm up and its use of the largest actions."""
+    manifests = RANKING_SESSIONS + LOOP_GREEDY[2:] + IT4_GREEDY + S256_GREEDY
+    s256 = "runs/world_model/sc-w256-d3-cd200k/model.pt"
+    python("imagination.ranking", "imagine", *manifests,
+           "--world-models", s256, f"{s256}@0", "runs/world_model/stoch-it5/model.pt",
+           "--scores", str(RESULTS / "s256_scores.csv"))
+    python("imagination.ranking", "agreement", str(RESULTS / "s256_scores.csv"),
+           "--csv", str(RESULTS / "s256_agreement.csv"))
+    rig_stats(manifests, RESULTS / "rig_stats.csv")
+
+
+def rig_stats(manifests: list[str], out: Path):
+    """Per policy, over the ranking's drives (each after the first, 10 s):
+    the share of frames with each arm within 30° of upright, all three,
+    and the share of actions beyond ±64, ±96 and at ±126 or more."""
+    import csv
+    import numpy as np
+    from common.data_lib import ACTION_SCALE, correct_yaws, hanging_yaws, load_recording, load_recordings
+    from common.render_lib import fill_unseen
+    from imagination.ranking_lib import capture_times
+    from imagination.sim2real import HANGING
+
+    hanging = hanging_yaws(load_recordings(Path("data"), HANGING)).numpy()
+    up_cos = np.cos(np.radians(30))
+    frames = {}
+    for m in manifests:
+        for line in Path(m).read_text().splitlines():
+            name, rec = line.split("\t")
+            f = Path(rec) / "frames.arrows"
+            r = load_recording(f)
+            at = capture_times(f, len(r.action))
+            drive = ((at % 15) < 10) & (at >= 15)
+            cos = correct_yaws(fill_unseen(r.obs, r.present), hanging)[..., 1]
+            a, up = np.round(r.action * ACTION_SCALE)[drive], (cos > up_cos)[drive]
+            frames.setdefault(name, []).append((a, up))
+    with open(out, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["policy", "arm0_up", "arm1_up", "arm2_up", "all_up", "beyond_64", "beyond_96", "at_126"])
+        for name, parts in frames.items():
+            a = np.concatenate([p[0] for p in parts])
+            up = np.concatenate([p[1] for p in parts])
+            w.writerow([name, *(round(float(x), 4) for x in up.mean(0)), round(float(up.all(-1).mean()), 4),
+                        *(round(float(x), 4) for x in ((np.abs(a) > 64).mean(), (np.abs(a) > 96).mean(),
+                                                         (np.abs(a) >= 126).mean()))])
+
+
 STEPS = {"wandb": wandb, "profile": profile, "sim2real": sim2real, "stochastic": stochastic, "ranking": ranking,
-         "agreement": agreement, "loop": loop}
+         "agreement": agreement, "loop": loop, "anneal": anneal}
 
 
 def main():

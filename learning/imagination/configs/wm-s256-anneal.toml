@@ -1,0 +1,83 @@
+# The annealed recipe (2026-09-29): the 256 x 3 stochastic world model the
+# scaling study chose, its noise rising from its mean (tau 0) to its own
+# spread (tau 1) over training, and 15 actions to ±126. Its policy
+# ppo-s256-anneal0-5k scored +2.21 on the rig, against +2.06 trained at tau 1
+# throughout and +1.76 at tau 0.
+# The world model checkpoint, and the recordings whose windows start episodes.
+world_model = "runs/world_model/sc-w256-d3-cd200k/model.pt"
+# Each imagined frame is drawn with its spread scaled by tau, rising
+# linearly from tau_start to tau_end over the run, for training and
+# evaluation alike.
+tau_start = 0.0
+tau_end = 1.0
+data_dir = "data"
+# The random-walk recordings and the collections with trained policies
+# (ppo-speed, ppo-wm2, ppo-wm3); their 5-minute validation recordings are
+# left out.
+recordings = ["1790282998", "1790279628", "1790281442", "1790372784", "1790378922", "1790464876",
+              # The loop's five 60-minute collections.
+              "1790611952", "1790619529", "1790627097", "1790636499", "1790645280"]
+
+# 15 actions 18 apart: -126 ... 126, the motor board's whole range.
+action_step = 18
+action_bins = 15
+# Frames the policy sees, each with the action before it.
+policy_window = 16
+# Drop tags from imagined frames as often as the world model predicts.
+sample_missing = true
+# Each arm turning faster than its limit, in revolutions per second, costs
+# speed_penalty times the square of the excess, per frame. The limits sit a
+# little under the random walk's 90th percentiles (2.3, 2.7 and 6.8 rev/s),
+# the speeds the world model has data for; the first arm's matches the
+# harness's governor.
+speed_limits_rev_s = [2.0, 2.5, 6.5]
+speed_penalty = 1.0
+
+hidden = 256
+layers = 2
+
+# The share of episode starts drawn from windows whose last frame has every
+# arm within 30° of upright; the rest are drawn uniformly.
+upright_start_fraction = 0.0
+
+# num_envs environments carry on across iterations. Each iteration runs
+# them for rollout_steps frames (8 ms each), then takes update_epochs passes
+# over them in minibatches. After each frame an environment starts again
+# from a recorded window with probability (1 - gamma) / reset_horizons:
+# episodes last reset_horizons / (1 - gamma) frames on average, 400 (3.2 s)
+# here.
+num_envs = 4096
+rollout_steps = 64
+reset_horizons = 2
+# The anneal over 5,000 iterations did as well on the rig as over 8,000
+# (+2.21 and +2.20).
+iterations = 5000
+update_epochs = 4
+minibatches = 8
+
+# The learning rate follows the trapezoid, counted in iterations.
+lr = 1e-3
+warmup_iterations = 10
+cooldown_fraction = 0.2
+
+# 0.995 looks about 200 frames (1.6 s) ahead.
+gamma = 0.995
+gae_lambda = 0.95
+clip = 0.2
+ent_coef = 0.01
+vf_coef = 0.5
+max_grad_norm = 0.5
+seed = 0
+
+eval_every = 50
+# Each evaluation is one greedy rollout of eval_steps frames (10 s) from the
+# pendulum hanging still, with its tag misses seeded by eval_seed.
+eval_steps = 1250
+eval_seed = 0
+# Evaluations also average this many rollouts, each one draw of the model.
+eval_rollouts = 16
+
+# Every checkpoint_every iterations, the whole training state is saved.
+checkpoint_every = 50
+
+wandb_project = "double-pendulum-imagination"

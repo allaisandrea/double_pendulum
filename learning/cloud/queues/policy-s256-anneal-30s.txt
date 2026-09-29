@@ -1,0 +1,5 @@
+# The annealed recipe with 30-second episodes: evaluations of 3,750 frames,
+# and environments restarting after 3,750 frames on average
+# ((1 - gamma) / reset_horizons per frame, gamma 0.995, reset_horizons 19),
+# for more of training in long balancing.
+policy ppo-s256-anneal-30s imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set eval_steps=3750 --set reset_horizons=19

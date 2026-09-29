@@ -485,12 +485,50 @@ def stochastic_gap():
     save(fig, "stochastic_gap")
 
 
+# The 256 x 3 model's policies, by how the model's noise was set in training.
+S256 = [("ppo-s256-mean", "τ = 0"), ("ppo-s256-anneal@1750", "0 → 1, at 1,750\n(τ ≈ 0.35)"),
+        ("ppo-s256", "τ = 1"), ("ppo-s256-anneal", "0 for 3k,\nthen 0 → 1"),
+        ("ppo-s256-anneal0-5k", "0 → 1\nover 5k"), ("ppo-s256-anneal0-8k", "0 → 1\nover 8k")]
+
+
+def anneal_rig():
+    """The 256 x 3 model's policies on the rig, greedy, against the model's
+    forecasts sampled and on its mean; and their time upright and use of
+    the largest actions."""
+    scores = {r["policy"]: r for r in read("s256_scores")}
+    stats = {r["policy"]: r for r in read("rig_stats")}
+    model = "sc-w256-d3-cd200k"
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), gridspec_kw={"width_ratios": [3, 2]})
+    ax = axes[0]
+    x = range(len(S256))
+    ax.bar(x, [num(scores[p]["rig"]) for p, _ in S256], 0.6, yerr=[num(scores[p]["rig_sem"]) for p, _ in S256],
+           color=GREY, capsize=3, label="rig (greedy)")
+    ax.plot(x, [num(scores[p][model]) for p, _ in S256], "o", color=BLUE, label="forecast, sampled")
+    ax.plot(x, [num(scores[p][f"{model}@0"]) for p, _ in S256], "^", color=RED, label="forecast, on its mean")
+    ax.set_xticks(list(x), [label for _, label in S256], fontsize=7)
+    ax.set_ylim(1.4, 2.9)
+    ax.set_ylabel("sum of cosines per frame")
+    ax.set_title("τ in training", fontsize=9)
+    ax.legend(fontsize=7, loc="upper left")
+    ax.grid(axis="x", visible=False)
+    ax = axes[1]
+    width = 0.27
+    for j, (key, label, color) in enumerate([("arm2_up", "outer arm up", GREEN), ("all_up", "all three up", BLUE),
+                                             ("at_126", "actions at ±126", RED)]):
+        ax.bar([i + (j - 1) * width for i in x], [num(stats[p][key]) for p, _ in S256], width, color=color, label=label)
+    ax.set_xticks(list(x), [label.split("\n")[0] for _, label in S256], fontsize=7, rotation=30, ha="right")
+    ax.set_ylabel("share of driving frames")
+    ax.legend(fontsize=7)
+    ax.grid(axis="x", visible=False)
+    save(fig, "anneal_rig")
+
+
 if __name__ == "__main__":
     FIGURES.mkdir(exist_ok=True)
     for draw in (profiling, batch, scaling, rollout, sim2real, ranking_rig, ranking_scatter,
                  ranking_agreement, ranking_exploitation, stochastic_ensemble, stochastic_agreement,
                  lambda: ranking_scatter(COMPARED, "stochastic_scatter", cols=4),
                  lambda: ranking_exploitation(COMPARED, "stochastic_exploitation", width=6),
-                 loop_world_models, loop_rig, stochastic_scaling, stochastic_gap):
+                 loop_world_models, loop_rig, stochastic_scaling, stochastic_gap, anneal_rig):
         draw()
     print(f"wrote {len(list(FIGURES.glob('*.svg')))} figures to {FIGURES}")
