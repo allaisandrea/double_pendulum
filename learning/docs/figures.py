@@ -516,7 +516,8 @@ def anneal_rig():
     for j, (key, label, color) in enumerate([("arm2_up", "outer arm up", GREEN), ("all_up", "all three up", BLUE),
                                              ("at_126", "actions at ±126", RED)]):
         ax.bar([i + (j - 1) * width for i in x], [num(stats[p][key]) for p, _ in S256], width, color=color, label=label)
-    ax.set_xticks(list(x), [label.split("\n")[0] for _, label in S256], fontsize=7, rotation=30, ha="right")
+    short = ["τ = 0", "0 → 1 at 1,750", "τ = 1", "3k at 0, 0 → 1", "0 → 1, 5k", "0 → 1, 8k"]
+    ax.set_xticks(list(x), short, fontsize=7, rotation=30, ha="right")
     ax.set_ylabel("share of driving frames")
     ax.legend(fontsize=7)
     ax.grid(axis="x", visible=False)

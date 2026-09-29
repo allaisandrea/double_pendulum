@@ -262,3 +262,31 @@ It helps the tail and the calibration, but loosens the typical window: the half-
 | 256 × 3, on its mean | 0.95 | 0.11 | 0.33 | +0.33 |
 
 Every result above is one seed per cell; differences under about 0.02 in NLL are within what a second seed might move.
+
+## Annealing the world model's noise
+
+Training a policy in the 256 × 3 stochastic model with its noise rising from none to its own over training gives the best rig score so far, +2.21: better than training with the noise throughout (+2.06) or without it (+1.76). The recipe is `imagination/configs/wm-s256-anneal.toml`.
+
+**Policies** (2026-09-29), all in `sc-w256-d3-cd200k` with the loop's recipe (15 actions to ±126, lr 1e-3, speed penalty, evaluations on 16 sampled rollouts), differing in `tau`, the scale of the sampled noise: 0 is the model's mean, a deterministic model; 1 its own spread.
+- `ppo-s256`: τ = 1 throughout, 5,000 iterations.
+- `ppo-s256-mean`: τ = 0 throughout, 5,000 iterations.
+- `ppo-s256-anneal`: `ppo-s256-mean`'s policy at iteration 3,000 (`imagination.train --init`), then 5,000 iterations with τ rising linearly from 0 to 1 (`tau_start`, `tau_end`), evaluated at the same τ; and its checkpoint at iteration 1,750, τ ≈ 0.35.
+- `ppo-s256-anneal0-5k` and `-8k`: the same anneal from scratch, over 5,000 and 8,000 iterations.
+
+Each was tested greedily on the rig with the ranking protocol (14 drives of 10 s after rests) and forecast by the model, sampled and on its mean, from the same starts:
+
+![Rig score of each 256 x 3 policy against the model's forecasts sampled and on its mean; and each policy's time with the outer arm and all three arms up, and its actions at full torque](figures/anneal_rig.svg)
+
+| policy | τ in training | rig | forecast, sampled | forecast, mean | all three up | at ±126 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ppo-s256-mean` | 0 | +1.76 ± 0.04 | +1.92 | +2.78 | 11% | 23% |
+| `ppo-s256-anneal`, iteration 1,750 | 0 → 0.35 | +1.67 ± 0.08 | +1.94 | +2.78 | 12% | 20% |
+| `ppo-s256` | 1 | +2.06 ± 0.01 | +2.10 | +2.22 | 23% | 5% |
+| `ppo-s256-anneal` | 0 (3k), then 0 → 1 | +2.20 ± 0.04 | +2.19 | +2.31 | 34% | 8% |
+| `ppo-s256-anneal0-5k` | 0 → 1 | **+2.21 ± 0.02** | +2.18 | +2.29 | 33% | 8% |
+| `ppo-s256-anneal0-8k` | 0 → 1 | +2.20 ± 0.02 | +2.17 | +2.21 | 30% | 6% |
+
+- **A deterministic model is exploited, even this one.** Trained on the model's mean, the policy is forecast +2.78 there and scores +1.76: it overrates its own policy by 1.0 per frame, against 0.34 for the 24 policies not trained in it, an exploitation gap of about +0.7, as for every deterministic model before. It balances bang-bang, at full torque 23% of the time.
+- **Sampled, the same network is honest**: it forecasts that policy at +1.92, and every other within 0.03–0.16; over all 30 rig-tested policies its mean error is 0.10, its MMRV 0.06, its Spearman correlation 0.98. Trained sampled throughout, `ppo-s256` matches the 512 × 3 loop's best (+2.06 against +2.04–2.08), its drives the steadiest of any policy (±0.01).
+- **The anneal beats both**, by 0.14 over `ppo-s256`, more than 3 standard errors, in three independent training runs (+2.20, +2.21, +2.20); 8,000 iterations do no better than 5,000, so it is not extra training. The gain is the outer arm: up 39–42% of the time against 26%, all three arms a third of the time.
+- **A reading of why**: without noise, the model's signal is clean enough for PPO to find the balancing strategy quickly, but the strategy leans on the mean's false precision, hard exact corrections; raising the noise to the model's own then hardens it, and at the end the policy trains against the same noise as `ppo-s256`. Checkpoint 1,750, still at τ ≈ 0.35, is the mean policy's rig score and saturation; they come right as τ reaches 1.
