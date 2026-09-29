@@ -1,0 +1,6 @@
+# Policies in the 256 x 3 stochastic world model the scaling study favoured
+# (sc-w256-d3-cd200k), with the latest loop recipe (15 actions to ±126):
+# sampled (tau 1), and on its mean (tau 0), to measure a deterministic
+# model's exploitation gap with the same network.
+policy ppo-s256 imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set 'world_model="runs/world_model/sc-w256-d3-cd200k/model.pt"' --set action_step=18 --set action_bins=15 --set eval_rollouts=16 --set eval_every=50 --set 'recordings=["1790282998", "1790279628", "1790281442", "1790372784", "1790378922", "1790464876", "1790611952", "1790619529", "1790627097", "1790636499", "1790645280"]' --set tau=1.0
+policy ppo-s256-mean imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --iterations 5000 --set 'world_model="runs/world_model/sc-w256-d3-cd200k/model.pt"' --set action_step=18 --set action_bins=15 --set eval_rollouts=16 --set eval_every=50 --set 'recordings=["1790282998", "1790279628", "1790281442", "1790372784", "1790378922", "1790464876", "1790611952", "1790619529", "1790627097", "1790636499", "1790645280"]' --set tau=0.0
