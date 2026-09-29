@@ -1,0 +1,5 @@
+# The annealed recipe with more policy capacity (actor and critic each 512
+# wide, 3 layers, from 256 x 2) and with a longer input (32 frames, 256 ms,
+# from 16), against ppo-s256-anneal0-5k.
+policy ppo-s256-anneal-512x3 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set hidden=512 --set layers=3
+policy ppo-s256-anneal-win32 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set policy_window=32
