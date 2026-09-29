@@ -1,0 +1,5 @@
+# The annealed recipe with 30-second episodes and a discount to match:
+# gamma 0.999 (a horizon of 1,000 frames, 8 s), environments restarting
+# after 3,750 frames on average ((1 - gamma) / reset_horizons per frame,
+# reset_horizons 3.75), and evaluations of 3,750 frames.
+policy ppo-s256-anneal-30s-g999 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set gamma=0.999 --set reset_horizons=3.75 --set eval_steps=3750
