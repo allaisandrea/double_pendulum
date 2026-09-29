@@ -1,0 +1,7 @@
+# The chosen 256 x 3 stochastic world model retrained with the first
+# 30-second-drive collection; and the standard (annealed) policy recipe in
+# the 512 x 5 model of the scaling study at the same length, whose median
+# NLL is its size's best and whose mean NLL is poor, to see whether that
+# tail is exploited.
+world_model s256-long-drives world_model/configs/stochastic-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge
+policy ppo-s512x5-anneal imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set 'world_model="runs/world_model/sc-w512-d5-cd200k/model.pt"'
