@@ -46,7 +46,7 @@ from world_model.model_lib import WorldModel, last_seen, rollout_losses
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
-            "stochastic", "nll_beta", "eval_ensemble"}
+            "stochastic", "nll_beta", "eval_ensemble", "eval_stride"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -146,8 +146,14 @@ def main(argv=None):
             for set_name, names in val_sets.items()
         },
     }
+    # The training set's evaluation windows are a fixed random sample; the
+    # validation sets' too, or with eval_stride every eval_stride-th start
+    # position, uniform in time over their recordings.
+    stride = cfg.get("eval_stride")
     eval_index = {
-        k: v.sample(min(cfg["eval_samples"], len(v)), generator) for k, v in eval_sets.items()
+        k: torch.arange(0, len(v), stride, device=v.starts.device) if stride and k != "train"
+        else v.sample(min(cfg["eval_samples"], len(v)), generator)
+        for k, v in eval_sets.items()
     }
     hanging = hanging_yaws(train_recs)
     upright_index = {k: upright_subset(v, eval_index[k], w, hanging) for k, v in eval_sets.items()}

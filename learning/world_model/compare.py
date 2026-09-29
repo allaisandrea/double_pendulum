@@ -9,8 +9,11 @@ compare like for like, whatever each model was trained or validated on.
 Prints 1 - R² at each horizon and the one-step missing-tag cross-entropy,
 as world_model.train logs them; for a stochastic model, also its
 ensemble metrics over --ensemble sampled rollouts per window
-(evaluation_lib.ensemble_metrics). --csv writes every metric, one row per
-checkpoint and recording.
+(evaluation_lib.ensemble_metrics). --stride takes every STRIDE-th start
+position rather than --samples random ones; --upright keeps the windows
+starting with arms 0 and 1 upright, and skips a recording with fewer than
+64 of them. --csv writes every metric, one row per checkpoint and
+recording.
 """
 import argparse
 import csv
@@ -23,7 +26,7 @@ from common.data_lib import Windows, hanging_yaws, load_recordings
 from common.run_lib import pick_device
 from world_model.evaluation_lib import evaluate
 from world_model.model_lib import load_world_model
-from world_model.train import upright_subset
+from world_model.train import MIN_UPRIGHT, upright_subset
 
 HORIZONS = [1, 4, 16, 64, 125]
 
@@ -34,6 +37,7 @@ def main():
     parser.add_argument("--val", nargs="+", required=True, help="recordings, each its own set")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--samples", type=int, default=4096)
+    parser.add_argument("--stride", type=int, help="every STRIDE-th start position instead of --samples random ones")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ensemble", type=int, default=8, help="sampled rollouts per window, stochastic models")
     parser.add_argument("--upright", action="store_true", help="only the windows starting with arms 0 and 1 upright")
@@ -54,9 +58,15 @@ def main():
     width = max(len(n) for n in names.values())
     for rec in args.val:
         windows = Windows(load_recordings(args.data_dir, [rec]), length, device)
-        index = windows.sample(min(args.samples, len(windows)), torch.Generator().manual_seed(args.seed))
+        if args.stride:
+            index = torch.arange(0, len(windows), args.stride, device=device)
+        else:
+            index = windows.sample(min(args.samples, len(windows)), torch.Generator().manual_seed(args.seed))
         if args.upright:
             index = upright_subset(windows, index, window, hanging)
+            if len(index) < MIN_UPRIGHT:
+                print(f"\n{rec}: only {len(index)} windows start upright; skipped")
+                continue
         print(f"\n{rec}: 1 - R² by horizon (frames), and one-step bce")
         print(" " * width + "".join(f"{f'h{h:03d}':>8s}" for h in HORIZONS) + f"{'bce':>8s}")
         for path, model in models.items():

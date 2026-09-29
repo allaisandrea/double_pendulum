@@ -114,3 +114,10 @@ def test_scale_trains_the_long_run_then_its_branches_and_carries_on_after_interr
     scale(args)
     assert (runs / "s-cd10" / "checkpoints" / "step_0000014.pt").exists()
     assert (runs / "s-cd5" / "model.pt").stat().st_mtime == finished
+
+
+def test_eval_stride_scores_every_strided_window_of_the_validation_sets(workdir):
+    main(["base.toml", "--name", "strided", "--set", "eval_stride=10", "--steps", "5", *COMMON])
+    index = torch.load(workdir / "runs/world_model/strided/eval_index.pt")
+    assert index["v"].tolist() == list(range(0, len(index["v"]) * 10, 10))
+    assert len(index["train"]) == 32, "the training set keeps its random sample"
