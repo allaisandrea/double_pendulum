@@ -1,12 +1,13 @@
 # The stochastic world model scaling study: widths 256-2048 x depths 3 and 5 on
 # world_model/configs/stochastic.toml, each a 200k-step constant-rate run (820M
 # windows at batch 4096) with cooldown branches at 12.5k-200k steps, evaluated
-# on the pooled validation set. Largest first, so the long jobs start early.
-scale sw-w2048-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=2048 --set layers=5 --set eval_every=10000
-scale sw-w2048-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=2048 --set layers=3 --set eval_every=10000
-scale sw-w1024-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=1024 --set layers=5 --set eval_every=10000
-scale sw-w1024-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=1024 --set layers=3 --set eval_every=10000
-scale sw-w512-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=512 --set layers=5 --set eval_every=10000
-scale sw-w512-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=512 --set layers=3 --set eval_every=10000
-scale sw-w256-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=256 --set layers=5 --set eval_every=10000
-scale sw-w256-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=256 --set layers=3 --set eval_every=10000
+# on the pooled validation set. Largest first, so the long jobs start early; no
+# T4s, which lack bf16 and would take the large models past --max-hours.
+scale sw-w2048-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=2048 --set layers=5 --set eval_every=10000
+scale sw-w2048-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=2048 --set layers=3 --set eval_every=10000
+scale sw-w1024-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=1024 --set layers=5 --set eval_every=10000
+scale sw-w1024-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=1024 --set layers=3 --set eval_every=10000
+scale sw-w512-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=512 --set layers=5 --set eval_every=10000
+scale sw-w512-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=512 --set layers=3 --set eval_every=10000
+scale sw-w256-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=256 --set layers=5 --set eval_every=10000
+scale sw-w256-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=256 --set layers=3 --set eval_every=10000
