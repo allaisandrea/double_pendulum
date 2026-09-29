@@ -99,3 +99,21 @@ def test_set_overrides_a_config_value_and_refuses_unknown_keys(workdir):
     assert cfg["gamma"] == 0.8 and cfg["hidden"] == 4
     with pytest.raises(SystemExit):
         main(["base.toml", "--name", "bad", "--set", "no_such_key=1", "--wandb", "disabled", "--device", "cpu"])
+
+
+def test_init_starts_a_new_run_from_another_runs_policy_with_a_tau_schedule(workdir):
+    common = ["--wandb", "disabled", "--device", "cpu", "--set", "checkpoint_every=1"]
+    main(["base.toml", "--name", "parent", "--iterations", "2", *common])
+    runs = workdir / "runs" / "policy"
+    parent = runs / "parent" / "checkpoints" / "iter_000002.pt"
+    # At learning rate 0 the child keeps exactly the parent's weights.
+    main(["base.toml", "--name", "child", "--iterations", "2", "--init", str(parent), "--set", "lr=0.0",
+          "--set", "tau_start=0.0", "--set", "tau_end=1.0", *common])
+    child = torch.load(runs / "child" / "checkpoints" / "iter_000001.pt", weights_only=False)
+    assert child["config"]["init"] == str(parent)
+    p = agent_state(parent)
+    assert all(torch.equal(child["agent"][k], p[k]) for k in p)
+    assert child["config"]["tau_end"] == 1.0
+    with pytest.raises(SystemExit):
+        main(["base.toml", "--name", "wide", "--iterations", "2", "--init", str(parent),
+              "--set", "action_bins=5", *common])

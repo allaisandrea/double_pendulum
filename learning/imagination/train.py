@@ -25,6 +25,13 @@ its standard error and `eval/mean/upright`: in a stochastic world model,
 one rollout is one draw. At the end, a video of the last evaluation's
 rollout goes to `runs/policy/<name>/rollout.mp4` and to W&B.
 
+--init starts a new run from another run's policy (a policy.pt or
+iter_NNNNNN.pt checkpoint), its actor and critic, with the new run's
+config, which must give it the same inputs and actions; the optimiser,
+schedule and environments start afresh. With `tau_start` and `tau_end`,
+a stochastic world model's tau moves linearly from one to the other over
+the run's iterations; evaluations use `tau_end`.
+
 Every `checkpoint_every` iterations, and at the end, the whole training
 state goes to `runs/policy/<name>/checkpoints/iter_NNNNNN.pt`, and a copy
 to `runs/policy/<name>/policy.pt`. --resume continues from one, with the
@@ -106,6 +113,7 @@ def parse_args(argv):
     parser.add_argument("--wandb", default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--device", default="auto")
     parser.add_argument("--iterations", type=int, help="override a new run's iterations")
+    parser.add_argument("--init", type=Path, help="a new run's starting policy: another run's checkpoint")
     parser.add_argument(
         "--set",
         action="append",
@@ -115,7 +123,7 @@ def parse_args(argv):
     )
     args = parser.parse_args(argv)
     if args.resume:
-        if args.config or args.name or args.iterations or args.set:
+        if args.config or args.name or args.iterations or args.set or args.init:
             parser.error("--resume takes the config, name and iterations from the checkpoint")
     elif not (args.config and args.name):
         parser.error("a new run needs a config and --name")
@@ -134,7 +142,7 @@ def main(argv=None):
         if out.exists():
             raise SystemExit(f"{out} exists: pick another --name")
         # tau: the spread of a stochastic world model's frames (default 1).
-        cfg = load_config(args.config, args.set, {"tau", "eval_rollouts"})
+        cfg = load_config(args.config, args.set, {"tau", "eval_rollouts", "tau_start", "tau_end"})
         if args.iterations is not None:
             cfg["iterations"] = args.iterations
     device = pick_device(args.device)
@@ -158,6 +166,11 @@ def main(argv=None):
     env = ImaginedEnv(*env_args)
     # Evaluating resets its environment, so it gets one of its own.
     eval_env = ImaginedEnv(*env_args)
+    tau_start, tau_end = cfg.get("tau_start"), cfg.get("tau_end")
+    if (tau_start is None) != (tau_end is None):
+        raise SystemExit("tau_start and tau_end go together")
+    if tau_end is not None:
+        eval_env.tau = tau_end
     starts = Starts(Windows(recordings, env.history, device), hanging, cfg.get("upright_start_fraction", 0.0))
     T, N, gamma = cfg["rollout_steps"], cfg["num_envs"], cfg["gamma"]
     reset_p = (1 - gamma) / cfg["reset_horizons"]
@@ -182,6 +195,12 @@ def main(argv=None):
             raise SystemExit(f"{args.resume} is from the last iteration: nothing to resume")
     else:
         env.reset(starts, starts.sample(N, generator))
+        if args.init:
+            init = torch.load(args.init, map_location=device, weights_only=False)
+            if init["features"] != env.features or not torch.equal(torch.as_tensor(init["levels"]).cpu(), levels.cpu()):
+                raise SystemExit(f"{args.init} has other inputs or actions than this config")
+            agent.load_state_dict(init["agent"])
+            cfg["init"] = str(args.init)
 
     run = wandb.init(
         project=cfg["wandb_project"],
@@ -239,6 +258,8 @@ def main(argv=None):
         shutil.copyfile(path, out / "policy.pt")
 
     for it in range(first, cfg["iterations"] + 1):
+        if tau_start is not None:
+            env.tau = tau_start + (tau_end - tau_start) * (it - 1) / max(1, cfg["iterations"] - 1)
         with timer("rollout"), torch.no_grad():
             # The iteration's resets, drawn at once on the CPU, so that no
             # frame waits on the device to learn which environments reset.
@@ -297,6 +318,7 @@ def main(argv=None):
             "train/value_mean": values.mean().item(),
             "train/return_mean": rets.mean().item(),
             "lr": sched.get_last_lr()[0],
+            "train/tau": env.tau,
         }
         evaluated = it % cfg["eval_every"] == 0 or it == cfg["iterations"]
         if evaluated:

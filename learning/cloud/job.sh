@@ -115,6 +115,12 @@ print('policy seconds per phase over 100 iterations:', {k: round(v, 1) for k, v 
         done
         aws s3 sync "$S3_ROOT/$(dirname "$WM")" "$(dirname "$WM")" --only-show-errors || exit 1
         [ -f "$WM" ] || { echo "no world model at $S3_ROOT/$WM"; exit 1; }
+        # A --init checkpoint, another run's, to start the policy from.
+        prev=
+        for a in "${ARGS[@]}"; do
+            [ "$prev" = --init ] && { aws s3 cp "$S3_ROOT/$a" "$a" --only-show-errors || exit 1; }
+            prev=$a
+        done
         train imagination.train
         ;;
     run)
