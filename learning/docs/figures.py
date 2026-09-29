@@ -421,12 +421,76 @@ def loop_rig():
     save(fig, "loop_rig")
 
 
+WIDTH_COLORS = {256: BLUE, 512: ORANGE, 1024: GREEN, 2048: RED}
+
+
+def branches(name: str) -> list[dict]:
+    """A scaling grid's cooldown branches, with the windows each trained on."""
+    rows = [r for r in runs(name).values() if r["branch_step"]]
+    for r in rows:
+        r["windows"] = int(r["step"]) * int(r["batch_size"]) / 1e6
+    return rows
+
+
+def stochastic_scaling():
+    """The clipped stochastic grid: median and mean NLL on val_all, and the
+    random walk's mean NLL, against training windows, per size."""
+    rows = branches("stochastic_scaling_clip")
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.6))
+    panels = [("val_all/median_nll", "val_all, median NLL", None),
+              ("val_all/nll", "val_all, mean NLL", (-1.13, -0.4)),
+              ("val_random_walk/nll", "random walk, mean NLL", None)]
+    for ax, (key, title, ylim) in zip(axes, panels):
+        for (width, depth), color in [((w, d), WIDTH_COLORS[w]) for w in WIDTH_COLORS for d in (3, 5)]:
+            series = sorted((r["windows"], num(r[key])) for r in rows
+                            if int(r["hidden"]) == width and int(r["layers"]) == depth)
+            ax.plot(*zip(*series), "o-" if depth == 3 else "s--", color=color, markersize=4,
+                    label=f"{width} × {depth}")
+        ax.set_xscale("log")
+        ticks = sorted({r["windows"] for r in rows})
+        ax.set_xticks(ticks, [f"{t:.0f}M" for t in ticks], fontsize=8)
+        ax.minorticks_off()
+        ax.set_xlabel("training windows")
+        ax.set_title(title, fontsize=9)
+        if ylim:
+            ax.set_ylim(*ylim)
+    axes[2].set_yscale("symlog", linthresh=1)
+    axes[0].set_ylabel("NLL per element (lower is better)")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=8, fontsize=8)
+    save(fig, "stochastic_scaling", rect=(0, 0.08, 1, 1))
+
+
+def stochastic_gap():
+    """Training against validation NLL with training length, for a small
+    and a large model: the variance overfits as the gap opens."""
+    rows = branches("stochastic_scaling_clip")
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3.3), sharey=True)
+    for ax, (width, depth) in zip(axes, [(256, 3), (1024, 3)]):
+        mine = sorted((r for r in rows if int(r["hidden"]) == width and int(r["layers"]) == depth),
+                      key=lambda r: r["windows"])
+        x = [r["windows"] for r in mine]
+        for key, label, style in [("train/nll", "training windows, mean", "o-"),
+                                  ("val_all/median_nll", "val_all, median", "s:"),
+                                  ("val_all/nll", "val_all, mean", "s--")]:
+            ax.plot(x, [num(r[key]) for r in mine], style, color=WIDTH_COLORS[width], label=label)
+        ax.set_xscale("log")
+        ax.set_xticks(x, [f"{t:.0f}M" for t in x], fontsize=8)
+        ax.minorticks_off()
+        ax.set_ylim(-1.3, -0.4)
+        ax.set_xlabel("training windows")
+        ax.set_title(f"{width} × {depth}", fontsize=9)
+        ax.legend(fontsize=7, loc="upper left")
+    axes[0].set_ylabel("NLL per element")
+    save(fig, "stochastic_gap")
+
+
 if __name__ == "__main__":
     FIGURES.mkdir(exist_ok=True)
     for draw in (profiling, batch, scaling, rollout, sim2real, ranking_rig, ranking_scatter,
                  ranking_agreement, ranking_exploitation, stochastic_ensemble, stochastic_agreement,
                  lambda: ranking_scatter(COMPARED, "stochastic_scatter", cols=4),
                  lambda: ranking_exploitation(COMPARED, "stochastic_exploitation", width=6),
-                 loop_world_models, loop_rig):
+                 loop_world_models, loop_rig, stochastic_scaling, stochastic_gap):
         draw()
     print(f"wrote {len(list(FIGURES.glob('*.svg')))} figures to {FIGURES}")

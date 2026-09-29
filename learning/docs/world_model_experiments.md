@@ -1,6 +1,6 @@
 # Double pendulum world model experiments
 
-As of 2026-09-28, after three policy ranking sessions on the rig, the first stochastic world model, and three rounds of the world model / policy / data loop. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). The code is in `learning/` (main), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`. An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
+As of 2026-09-29, after three policy ranking sessions on the rig, the stochastic world model, six rounds of the world model / policy / data loop, and a scaling study of the stochastic model. Every figure is drawn by `docs/figures.py` from the CSV files in `docs/results`, which `docs/results.py` regenerates from the sources: W&B, `world_model.profile` and its cloud logs, `imagination.sim2real`, `world_model.compare` and `imagination.ranking` (`uv run python -m docs.results`, then `uv run --group docs python docs/figures.py`). The code is in `learning/` (main), and every run is in W&B (projects double-pendulum-world-model and double-pendulum-imagination) and on S3 under `double_pendulum/runs/`. An earlier shared version, from before the ranking: <https://claude.ai/code/artifact/4ffc27df-3c87-4337-a18b-35ba2bf28011>
 
 ## Summary
 
@@ -209,3 +209,56 @@ The first two arms were already up most of the time; the gain is the outer arm, 
 - **The one-step likelihood improves on every new collection, most with the first round.** `stoch-it1`, with the burst collection and the ranking recordings, gains 0.07–0.09 per element on collections 0 to 2, including the two it never trained on; adding a collection then gains a little more on its own recording (collection 2: −1.209 to −1.228).
 - **Open loop, the rest barely moves.** 1 − R² at 16 frames improves on the burst collection (0.039 to 0.030) but not on the later ones, where it drifts up (collection 1: 0.039 to 0.047); from upright at 64 frames the CRPS stays above copying's on the new policies' data (1.6), which balance more and so are harder to foresee 0.5 s ahead.
 - Every model trains 50k steps whatever the data, so as the data grows from 5 to almost 10 hours each recording is seen less: the models may simply be undertrained for it.
+
+## Scaling the stochastic world model
+
+With twice the data of the first scaling study, the stochastic model's typical prediction keeps improving with size and training length, but its variance overfits, the more so the larger the model, and its long-horizon accuracy does not change. The best all-round choice is the smallest model tried, 256 × 3, trained for 240k steps.
+
+**Setup** (`world_model/configs/stochastic.toml`, 2026-09-28 and 29): the stochastic recipe (`stoch-b05`: a diagonal Gaussian over each change, β-NLL 0.5, batch 4096, lr 2e-3) on all the data so far, about 11 hours: the original recordings, the ranking sessions' greedy runs of 24 policies, and the five loop collections. Each of 8 sizes (widths 256 to 2048, depths 3 and 5) trains one 200k-step run at a constant rate with cooldown branches at 12.5k to 200k steps (`cloud/queues/stochastic-scaling-2.txt`), so each branch trains on 61M to 983M windows. Every model is judged on `val_all`, one pooled set of all nine validation recordings (45 minutes: the random walk, the three original policies and the five loop collections), scored on every 16th window, uniform in time (about 23,000 windows): the NLL per element, its median, the calibration, and the CRPS of 8 sampled rollouts per window.
+
+**The first grid diverged.** At lr 2e-3 the larger models blew up, the larger the sooner, and settled on predicting no change with a huge variance: 2048 × 5 at step 3,850, 2048 × 3 at 6,500, 1024 × 5 at 40,800, 512 × 5 at 115,850, 1024 × 3 at 188,700; 256 × 3 and 512 × 3 never. The NLL's gradient grows as 1/σ², so a rare large step is fatal where MSE would shrug it off. Five 20k-step runs of 2048 × 3 found the cause (`cloud/queues/stochastic-diagnosis.txt`, `val_all` NLL):
+
+| 2048 × 3, 20k steps | NLL | CRPS, 64 frames |
+| --- | --- | --- |
+| unchanged | +2.92 (diverged) | 0.84 |
+| gradient clipping at 1.0 | −1.09 | 0.546 |
+| fp32 instead of bf16 | −1.09 | 0.547 |
+| lr 5e-4 | −1.11 | 0.544 |
+| log-variance floor −7 (from −10) | −0.85 | 0.574 |
+
+Any of clipping, fp32 or a lower rate prevents it; raising the variance floor does not, and costs accuracy. The grid was run again with gradient clipping at 1.0 (`sc-w…`), and every size then trained stably.
+
+**Results**, NLL per element on `val_all` (lower is better; the random walk is part of `val_all`, shown on its own on the right):
+
+![Median and mean NLL on val_all, and the random walk's mean NLL, against training windows for each size](figures/stochastic_scaling.svg)
+
+- **The median NLL, the typical window, improves steadily with size and with training**, from −0.97 (256 × 3, 61M windows) to −1.17 (2048 × 5, 983M): every doubling of training helps every size, and size helps up to about 1024 × 3.
+- **The mean NLL goes the other way for the larger models**: they do best after the least training and then degrade, 1024 × 3 to +0.36 and 2048 × 3 to +11.75 at 983M windows. Only 256 × 3 and 256 × 5 keep improving; they give the best mean NLL, −1.122 (256 × 3, 983M) and −1.119 (256 × 5, 246M).
+- **The random walk carries most of the damage**: it is only 5% of the training data, and there the large models' NLL rises by up to two orders of magnitude.
+- **The long horizon does not scale**: the ensemble's CRPS at 64 frames is 0.54–0.56 of copying's in every cell.
+
+**The variance overfits.** The training NLL keeps falling at every size; for large models the validation mean NLL parts from it, while the median follows:
+
+![Training NLL against val_all's median and mean NLL with training length, for 256 x 3 and 1024 x 3](figures/stochastic_gap.svg)
+
+The mean's predictions hardly overfit (validation MSE is flat after 50k steps); it is the variance that learns the training data's errors, which are about half the validation errors, and becomes confidently wrong in a small tail of windows. The NLL charges a confident miss e²/σ², without bound, so a few windows outweigh thousands of small gains, while the median, and the CRPS, which grows only linearly with the error, barely notice. It is the regression version of the overconfidence classifiers show with long training (Guo et al. 2017), and it is epistemic: a single Gaussian cannot say "unfamiliar".
+
+**A two-stage variance does not fix it** at 512 × 3 (`cloud/queues/two-stage-2.txt`). Three mean models trained on MSE, on all the data (`sm-all`) and on each half of it in alternating 60-second blocks (`sm-f0`, `sm-f1`), and a network trained on each window's held-out residual from the fold model that did not see it (`sv-two-stage`), against the joint β-NLL model (`sj-joint`), 50k steps each:
+
+| 512 × 3, 50k steps | val NLL | val median NLL | random walk NLL | ensemble spread / error, 16 frames |
+| --- | --- | --- | --- | --- |
+| joint (β-NLL) | −1.054 | **−1.080** | −0.68 | 0.70 |
+| two-stage | −1.006 | −1.009 | **−0.83** | **0.79** |
+| *256 × 3, 60k steps (grid)* | *−1.088* | *−1.038* | *−0.92* | *0.76* |
+
+It helps the tail and the calibration, but loosens the typical window: the half-data models err more than the full one (validation MSE 0.041 and 0.048 against 0.040), so the variance fitted to their residuals is too wide for `sm-all`'s mean.
+
+**The choice: 256 × 3 at 240k steps** (`sc-w256-d3-cd200k`). It has the best mean NLL and gives up little of the median (−1.071, against −1.082 for the 512 × 3 at 50k steps the loop used), 0.18M parameters against 0.6M, so every imagined step is cheaper, and a small model has fewer sharp, confident errors for a policy to find. Ranked against the rig over 24 policies (sampled, 8 rollouts per drive), it judges as well as the 512 × 3 trained on the same data (`stoch-it5`):
+
+| world model | Spearman | MMRV | mean error | bias |
+| --- | --- | --- | --- | --- |
+| 256 × 3, 240k steps, sampled | 0.97 | 0.06 | 0.10 | +0.08 |
+| 512 × 3, 50k steps (`stoch-it5`), sampled | 0.97 | 0.04 | 0.08 | +0.07 |
+| 256 × 3, on its mean | 0.95 | 0.11 | 0.33 | +0.33 |
+
+Every result above is one seed per cell; differences under about 0.02 in NLL are within what a second seed might move.

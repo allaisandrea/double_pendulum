@@ -6,7 +6,9 @@ from the sources the experiments used, from learning/:
 
 wandb: world_model.report of the batch sweep, the scaling runs, the
 rollout runs and the stochastic scaling runs (batch.csv, scaling.csv,
-rollout.csv, stochastic_scaling.csv), from W&B.
+rollout.csv), and the stochastic scaling study (stochastic_scaling.csv,
+stochastic_diagnosis.csv, stochastic_scaling_clip.csv, two_stage_joint.csv,
+two_stage.csv), from W&B.
 profile: world_model.profile timed here (profile_<device>.csv, on the Mac
 profile_mps.csv), and the logs of the cloud profiling jobs, fetched from
 S3 (profile_cloud.csv).
@@ -89,8 +91,12 @@ def wandb():
            "--horizons", "16", "64", "125", "--csv", str(RESULTS / "scaling.csv"))
     python("world_model.report", "rollout", "--sets", "val_policy_wm3", "val_random_walk",
            "--horizons", "16", "64", "125", "--csv", str(RESULTS / "rollout.csv"))
-    python("world_model.report", "sw-w", "--sets", "val_all", "val_random_walk", "val_policy_wm3", "val_ppo_stoch_it4",
-           "--all", "--csv", str(RESULTS / "stochastic_scaling.csv"))
+    sets = ["val_all", "val_random_walk", "val_policy_wm3", "val_ppo_stoch_it4", "train"]
+    # The stochastic scaling study: the first grid (diverged), the diagnosis,
+    # the grid again with gradient clipping, and the two-stage comparison.
+    for prefix, name in [("sw-w", "stochastic_scaling"), ("sdiag-", "stochastic_diagnosis"),
+                         ("sc-w", "stochastic_scaling_clip"), ("sj-", "two_stage_joint"), ("sv-", "two_stage")]:
+        python("world_model.report", prefix, "--sets", *sets, "--all", "--csv", str(RESULTS / f"{name}.csv"))
 
 
 def profile():
