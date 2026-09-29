@@ -1,0 +1,7 @@
+# Why the large stochastic models diverge: 2048 x 3, which broke down at step
+# 6,500 in the scaling grid, for 20k steps with one change each.
+world_model sdiag-base world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 20000 --set hidden=2048 --set layers=3 --set eval_every=5000
+world_model sdiag-clip world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 20000 --set hidden=2048 --set layers=3 --set eval_every=5000 --set max_grad_norm=1.0
+world_model sdiag-lr5e-4 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 20000 --set hidden=2048 --set layers=3 --set eval_every=5000 --set lr=5e-4
+world_model sdiag-fp32 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 20000 --set hidden=2048 --set layers=3 --set eval_every=5000 --set bf16=false
+world_model sdiag-lvmin7 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 20000 --set hidden=2048 --set layers=3 --set eval_every=5000 --set logvar_min=-7.0

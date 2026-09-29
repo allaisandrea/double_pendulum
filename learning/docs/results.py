@@ -4,8 +4,9 @@ from the sources the experiments used, from learning/:
     uv run python -m docs.results            # every source
     uv run python -m docs.results ranking    # some of them
 
-wandb: world_model.report of the batch sweep, the scaling runs and the
-rollout runs (batch.csv, scaling.csv, rollout.csv), from W&B.
+wandb: world_model.report of the batch sweep, the scaling runs, the
+rollout runs and the stochastic scaling runs (batch.csv, scaling.csv,
+rollout.csv, stochastic_scaling.csv), from W&B.
 profile: world_model.profile timed here (profile_<device>.csv, on the Mac
 profile_mps.csv), and the logs of the cloud profiling jobs, fetched from
 S3 (profile_cloud.csv).
@@ -88,6 +89,8 @@ def wandb():
            "--horizons", "16", "64", "125", "--csv", str(RESULTS / "scaling.csv"))
     python("world_model.report", "rollout", "--sets", "val_policy_wm3", "val_random_walk",
            "--horizons", "16", "64", "125", "--csv", str(RESULTS / "rollout.csv"))
+    python("world_model.report", "sw-w", "--sets", "val_all", "val_random_walk", "val_policy_wm3", "val_ppo_stoch_it4",
+           "--all", "--csv", str(RESULTS / "stochastic_scaling.csv"))
 
 
 def profile():

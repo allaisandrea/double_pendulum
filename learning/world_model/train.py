@@ -41,12 +41,12 @@ from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
 from common.run_lib import Timer, git_commit, load_config, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid
 from world_model.evaluation_lib import evaluate
-from world_model.model_lib import WorldModel, last_seen, rollout_losses
+from world_model.model_lib import LOGVAR_MIN, WorldModel, last_seen, rollout_losses
 
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
-            "stochastic", "nll_beta", "eval_ensemble", "eval_stride"}
+            "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -162,7 +162,8 @@ def main(argv=None):
     scale = change_scale(Windows(train_recs, w + 1, device), 65536, generator)
     if ck:
         scale = ck["delta_scale"]
-    model = WorldModel(w, cfg["hidden"], cfg["layers"], scale, cfg.get("stochastic", False)).to(device)
+    model = WorldModel(w, cfg["hidden"], cfg["layers"], scale, cfg.get("stochastic", False),
+                       cfg.get("logvar_min", LOGVAR_MIN)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     # Training can run the model compiled, and its matrix products in
     # bfloat16 on CUDA; evaluation always runs it as it is, in float32.

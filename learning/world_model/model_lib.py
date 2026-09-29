@@ -27,8 +27,9 @@ from common.data_lib import NUM_TAGS
 
 STEP_FEATURES = NUM_TAGS * 2 + NUM_TAGS + 1
 # Bounds on a stochastic model's log-variance, in normalised units, applied
-# softly so that the gradient never vanishes: a standard deviation from
-# about 0.007 to 7.4 times a typical frame's change.
+# softly so that the gradient never vanishes: by default a standard
+# deviation from about 0.007 to 7.4 times a typical frame's change. A
+# higher floor (config logvar_min) caps the 1/variance in the NLL's gradient.
 LOGVAR_MIN, LOGVAR_MAX = -10.0, 4.0
 
 
@@ -59,10 +60,12 @@ def soft_clamp(x: torch.Tensor, low: float, high: float) -> torch.Tensor:
 
 
 class WorldModel(nn.Module):
-    def __init__(self, window: int, hidden: int, layers: int, delta_scale: float, stochastic: bool = False):
+    def __init__(self, window: int, hidden: int, layers: int, delta_scale: float, stochastic: bool = False,
+                 logvar_min: float = LOGVAR_MIN):
         super().__init__()
         self.window = window
         self.stochastic = stochastic
+        self.logvar_min = logvar_min
         self.register_buffer("delta_scale", torch.tensor(float(delta_scale)))
         dims = [window * STEP_FEATURES] + [hidden] * layers
         blocks = []
@@ -81,7 +84,7 @@ class WorldModel(nn.Module):
         b = obs.shape[0]
         x = step_features(obs, present, action).reshape(b, -1)
         out = self.head(self.body(x)).reshape(b, NUM_TAGS, -1)
-        logvar = soft_clamp(out[..., 3:5], LOGVAR_MIN, LOGVAR_MAX) if self.stochastic else None
+        logvar = soft_clamp(out[..., 3:5], self.logvar_min, LOGVAR_MAX) if self.stochastic else None
         return out[..., :2], out[..., 2], logvar
 
     def predict(self, obs, present, action, tau: float = 0.0, generator: torch.Generator | None = None):
@@ -104,7 +107,8 @@ def load_world_model(path, device) -> WorldModel:
     """A checkpoint train.py saved, frozen, in eval mode."""
     ck = torch.load(path, map_location=device)
     cfg = ck["config"]
-    model = WorldModel(cfg["window"], cfg["hidden"], cfg["layers"], ck["delta_scale"], cfg.get("stochastic", False))
+    model = WorldModel(cfg["window"], cfg["hidden"], cfg["layers"], ck["delta_scale"], cfg.get("stochastic", False),
+                       cfg.get("logvar_min", LOGVAR_MIN))
     model.load_state_dict(ck["model"])
     model.requires_grad_(False)
     return model.to(device).eval()
