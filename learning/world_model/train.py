@@ -41,12 +41,14 @@ from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
 from common.run_lib import Timer, git_commit, load_config, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid
 from world_model.evaluation_lib import evaluate
-from world_model.model_lib import LOGVAR_MIN, WorldModel, last_seen, rollout_losses
+from world_model.model_lib import (LOGVAR_MIN, TwoStageWorldModel, WorldModel, last_seen, load_world_model,
+                                   rollout_losses, variance_losses)
 
 UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
-            "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min"}
+            "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min", "fold_block", "train_fold",
+            "mean_model", "mean_folds"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -139,6 +141,9 @@ def main(argv=None):
     # Training windows hold the window and the frames the loss rolls out over.
     rollout_k = cfg.get("rollout_train", 1)
     train = Windows(train_recs, w + rollout_k, device)
+    if cfg.get("train_fold") is not None:
+        # One half of the data, in alternating blocks of fold_block steps.
+        train.keep_fold(cfg["fold_block"], cfg["train_fold"])
     eval_sets = {
         "train": Windows(train_recs, w + horizon, device),
         **{
@@ -162,8 +167,19 @@ def main(argv=None):
     scale = change_scale(Windows(train_recs, w + 1, device), 65536, generator)
     if ck:
         scale = ck["delta_scale"]
-    model = WorldModel(w, cfg["hidden"], cfg["layers"], scale, cfg.get("stochastic", False),
-                       cfg.get("logvar_min", LOGVAR_MIN)).to(device)
+    folds = None
+    if cfg.get("mean_model"):
+        # The second stage of a two-stage model: a variance for the mean
+        # model, trained on each window's mean from the fold model that did
+        # not see it.
+        if rollout_k != 1:
+            raise SystemExit("a two-stage model trains one step ahead")
+        folds = [load_world_model(p, device) for p in cfg["mean_folds"]]
+        model = TwoStageWorldModel(load_world_model(cfg["mean_model"], device), w, cfg["hidden"], cfg["layers"],
+                                   scale, cfg.get("logvar_min", LOGVAR_MIN)).to(device)
+    else:
+        model = WorldModel(w, cfg["hidden"], cfg["layers"], scale, cfg.get("stochastic", False),
+                           cfg.get("logvar_min", LOGVAR_MIN)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     # Training can run the model compiled, and its matrix products in
     # bfloat16 on CUDA; evaluation always runs it as it is, in float32.
@@ -256,10 +272,16 @@ def main(argv=None):
                 lr = cfg["lr"] * trapezoid(step - 1, cfg["steps"], cfg["warmup_steps"], cooldown)
                 for g in opt.param_groups:
                     g["lr"] = lr
-                batch = train.gather(train.sample(cfg["batch_size"], generator))
+                index = train.sample(cfg["batch_size"], generator)
+                batch = train.gather(index)
                 with torch.autocast("cuda", torch.bfloat16, enabled=bf16):
-                    fit, bce, mse = rollout_losses(forward, batch.obs, batch.present, batch.action, rollout_k,
-                                                   cfg.get("nll_beta", 0.0))
+                    if folds:
+                        fit, bce, mse = variance_losses(model, folds, batch.obs[:, :w], batch.present[:, :w],
+                                                        batch.action[:, :w], batch.obs[:, w], batch.present[:, w],
+                                                        train.fold_of(index, cfg["fold_block"]))
+                    else:
+                        fit, bce, mse = rollout_losses(forward, batch.obs, batch.present, batch.action, rollout_k,
+                                                       cfg.get("nll_beta", 0.0))
                     loss = fit + cfg["bce_weight"] * bce
                 opt.zero_grad(set_to_none=True)
                 loss.backward()

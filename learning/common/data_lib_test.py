@@ -67,3 +67,18 @@ def test_corrected_yaws_hang_at_180_and_keep_their_differences():
     assert angles[0, 1:] == pytest.approx([0.0, 1.0])
     fixed_t = correct_yaws(torch.from_numpy(obs), torch.from_numpy(hanging))
     assert fixed_t.numpy() == pytest.approx(fixed)
+
+
+def test_folds_alternate_by_blocks_of_each_recordings_steps():
+    import numpy as np
+    import torch
+    from common.data_lib import Recording, Windows
+
+    recs = [Recording(n, np.zeros((t, 3, 2), np.float32), np.ones((t, 3), bool), np.zeros(t, np.float32))
+            for n, t in (("a", 25), ("b", 14))]
+    w = Windows(recs, 5, "cpu")
+    folds = w.fold_of(torch.arange(len(w)), 10)
+    # a: starts 0-20 in blocks 0-9, 10-19, 20; b: starts 0-9, all in its first block.
+    assert folds.tolist() == [0] * 10 + [1] * 10 + [0] + [0] * 10
+    w.keep_fold(10, 1)
+    assert w.local.tolist() == list(range(10, 20)) and len(w) == 10

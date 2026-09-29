@@ -100,6 +100,11 @@ t = torch.load('runs/policy/bench-policy/policy.pt', weights_only=False)['time']
 print('policy seconds per phase over 100 iterations:', {k: round(v, 1) for k, v in t.items()})"
         ;;
     world_model)
+        # The world models it builds on (a two-stage model's mean models).
+        for m in $({ cat "$CONFIG"; printf '%s\n' "${ARGS[@]}"; } | grep -o 'runs/world_model/[A-Za-z0-9_.@-]*' | sort -u); do
+            aws s3 sync "$S3_ROOT/$m" "$m" --exclude "checkpoints/*" --only-show-errors || exit 1
+            [ -f "$m/model.pt" ] || { echo "no world model at $S3_ROOT/$m"; exit 1; }
+        done
         train world_model.train
         ;;
     policy)

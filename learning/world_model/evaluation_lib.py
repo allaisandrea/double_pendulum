@@ -17,7 +17,7 @@ import torch
 from torch.nn import functional as F
 
 from common.data_lib import Batch, Windows
-from world_model.model_lib import WorldModel, last_seen, losses
+from world_model.model_lib import WorldModel, gaussian_nll, last_seen, losses
 
 
 @torch.no_grad()
@@ -85,14 +85,18 @@ def one_minus_r2(pred_change, change, mask) -> float:
 def calibration(model: WorldModel, batch: Batch) -> dict:
     """A stochastic model's one-step calibration: the share of normalised
     changes within 1 and 2 predicted standard deviations of the mean (0.683
-    and 0.954 if calibrated), and the median standard deviation."""
+    and 0.954 if calibrated), the median standard deviation, and the median
+    NLL per element, which a few confident misses cannot move as they do
+    the mean."""
     w = model.window
     obs, present = batch.obs[:, :w], batch.present[:, :w]
     delta, _, logvar = model(obs, present, batch.action[:, :w])
     ref, has_ref = last_seen(obs, present)
     mask = batch.present[:, w] & has_ref
-    z = ((delta - (batch.obs[:, w] - ref) / model.delta_scale) * (-0.5 * logvar).exp())[mask].abs()
+    error = (delta - (batch.obs[:, w] - ref) / model.delta_scale)[mask]
+    z = (error * (-0.5 * logvar[mask]).exp()).abs()
     return {
+        "median_nll": gaussian_nll(error.float(), logvar[mask].float()).median().item(),
         "within_1sd": (z < 1).float().mean().item(),
         "within_2sd": (z < 2).float().mean().item(),
         "median_sd": (0.5 * logvar[mask]).exp().median().item(),

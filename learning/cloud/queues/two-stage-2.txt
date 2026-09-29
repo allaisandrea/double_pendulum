@@ -1,0 +1,3 @@
+# The two-stage model's second stage: a variance network for sm-all, fitted
+# on each window's held-out mean from sm-f0 or sm-f1 (plain NLL).
+world_model sv-two-stage world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set max_grad_norm=1.0 --set compile=false --set fold_block=7500 --set 'mean_model="runs/world_model/sm-all/model.pt"' --set 'mean_folds=["runs/world_model/sm-f0/model.pt", "runs/world_model/sm-f1/model.pt"]'

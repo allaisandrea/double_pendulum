@@ -121,3 +121,24 @@ def test_eval_stride_scores_every_strided_window_of_the_validation_sets(workdir)
     index = torch.load(workdir / "runs/world_model/strided/eval_index.pt")
     assert index["v"].tolist() == list(range(0, len(index["v"]) * 10, 10))
     assert len(index["train"]) == 32, "the training set keeps its random sample"
+
+
+def test_a_two_stage_model_fits_its_variance_to_held_out_means(workdir):
+    from world_model.model_lib import TwoStageWorldModel, load_world_model
+
+    runs = workdir / "runs/world_model"
+    fold = ["--set", "fold_block=50"]
+    main(["base.toml", "--name", "mean-all", *COMMON])
+    main(["base.toml", "--name", "mean-f0", *fold, "--set", "train_fold=0", *COMMON])
+    main(["base.toml", "--name", "mean-f1", *fold, "--set", "train_fold=1", *COMMON])
+    main(["base.toml", "--name", "var", *fold, "--set", "stochastic=true",
+          "--set", f'mean_model="{runs / "mean-all/model.pt"}"',
+          "--set", f'mean_folds=["{runs / "mean-f0/model.pt"}", "{runs / "mean-f1/model.pt"}"]', *COMMON])
+    model = load_world_model(runs / "var/model.pt", "cpu")
+    mean = load_world_model(runs / "mean-all/model.pt", "cpu")
+    assert isinstance(model, TwoStageWorldModel) and model.stochastic
+    obs = torch.nn.functional.normalize(torch.randn(3, 4, 3, 2), dim=-1)
+    present, action = torch.ones(3, 4, 3, dtype=torch.bool), torch.zeros(3, 4)
+    # The mean is the mean model's, whatever the variance network learned.
+    assert torch.allclose(model.predict(obs, present, action)[0], mean.predict(obs, present, action)[0], atol=1e-6)
+    assert not any(p.requires_grad for p in model.mean_model.parameters())

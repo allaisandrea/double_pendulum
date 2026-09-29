@@ -1,0 +1,18 @@
+# The stochastic world model scaling study, second attempt, with gradient
+# clipping at 1.0, which kept 2048 x 3 stable where the first grid diverged
+# (stochastic-diagnosis.txt). First the two-stage comparison at 512 x 3:
+# three mean models (MSE: on all the data, and on each half, in alternating
+# 60-second blocks) for two-stage-2.txt, and the joint beta-NLL model they
+# compare with. Then the size x length grid, largest first.
+world_model sm-all world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set stochastic=false --set max_grad_norm=1.0
+world_model sm-f0 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set stochastic=false --set max_grad_norm=1.0 --set fold_block=7500 --set train_fold=0
+world_model sm-f1 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set stochastic=false --set max_grad_norm=1.0 --set fold_block=7500 --set train_fold=1
+world_model sj-joint world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set max_grad_norm=1.0
+scale sc-w2048-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=2048 --set layers=5 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w2048-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=2048 --set layers=3 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w1024-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=1024 --set layers=5 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w1024-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=1024 --set layers=3 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w512-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=512 --set layers=5 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w512-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=512 --set layers=3 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w256-d5 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=256 --set layers=5 --set eval_every=10000 --set max_grad_norm=1.0
+scale sc-w256-d3 world_model/configs/stochastic.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --steps 200000 --branches 12500 25000 50000 100000 200000 -- --set hidden=256 --set layers=3 --set eval_every=10000 --set max_grad_norm=1.0

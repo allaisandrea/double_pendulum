@@ -103,12 +103,37 @@ class WorldModel(nn.Module):
         return ref + delta * self.delta_scale, logit, ref, has_ref
 
 
+class TwoStageWorldModel(WorldModel):
+    """A stochastic model in two stages: a deterministic `mean_model`, frozen,
+    predicts the change, and this network its log-variance and the missing
+    logits. Trained on held-out residuals (variance_losses), the variance
+    measures the error the mean makes on data it has not seen, rather than
+    on its own training data, where it is smaller."""
+
+    def __init__(self, mean_model: WorldModel, window: int, hidden: int, layers: int, delta_scale: float,
+                 logvar_min: float = LOGVAR_MIN):
+        super().__init__(window, hidden, layers, delta_scale, stochastic=True, logvar_min=logvar_min)
+        if mean_model.window != window:
+            raise ValueError("the mean model sees another window")
+        self.mean_model = mean_model.requires_grad_(False)
+
+    def forward(self, obs, present, action):
+        _, logit, logvar = super().forward(obs, present, action)
+        delta = self.mean_model(obs, present, action)[0] * (self.mean_model.delta_scale / self.delta_scale)
+        return delta, logit, logvar
+
+
 def load_world_model(path, device) -> WorldModel:
-    """A checkpoint train.py saved, frozen, in eval mode."""
+    """A checkpoint train.py saved, frozen, in eval mode. A two-stage model
+    needs its mean model where its config says."""
     ck = torch.load(path, map_location=device)
     cfg = ck["config"]
-    model = WorldModel(cfg["window"], cfg["hidden"], cfg["layers"], ck["delta_scale"], cfg.get("stochastic", False),
-                       cfg.get("logvar_min", LOGVAR_MIN))
+    if cfg.get("mean_model"):
+        model = TwoStageWorldModel(load_world_model(cfg["mean_model"], device), cfg["window"], cfg["hidden"],
+                                   cfg["layers"], ck["delta_scale"], cfg.get("logvar_min", LOGVAR_MIN))
+    else:
+        model = WorldModel(cfg["window"], cfg["hidden"], cfg["layers"], ck["delta_scale"],
+                           cfg.get("stochastic", False), cfg.get("logvar_min", LOGVAR_MIN))
     model.load_state_dict(ck["model"])
     model.requires_grad_(False)
     return model.to(device).eval()
@@ -142,6 +167,21 @@ def losses(model: WorldModel, obs, present, action, target, target_present, beta
     delta, logit, logvar = model(obs, present, action)
     ref, has_ref = last_seen(obs, present)
     return step_losses(delta, logit, logvar, ref, has_ref, target, target_present, model.delta_scale, beta)
+
+
+def variance_losses(model: TwoStageWorldModel, folds: list[WorldModel], obs, present, action, target,
+                    target_present, fold: torch.Tensor):
+    """`step_losses` of a two-stage model's variance network (its plain NLL,
+    the cross-entropy of its missing logits, and the MSE) against held-out
+    means: `folds` are two mean models, each trained on one fold of the
+    data, and a window of fold f [B] takes its mean from the other's."""
+    _, logit, logvar = WorldModel.forward(model, obs, present, action)
+    with torch.no_grad():
+        other = [m(obs, present, action)[0] * m.delta_scale for m in folds]
+        change = torch.where((fold == 0)[:, None, None], other[1], other[0])
+    ref, has_ref = last_seen(obs, present)
+    return step_losses(change / model.delta_scale, logit, logvar, ref, has_ref, target, target_present,
+                       model.delta_scale, 0.0)
 
 
 def rollout_losses(model: WorldModel, obs, present, action, steps: int, beta: float = 0.0):

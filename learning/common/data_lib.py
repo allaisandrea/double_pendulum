@@ -102,20 +102,34 @@ class Windows:
             np.concatenate([r.action for r in recordings])
         ).to(device)
         # Starts are indices into the concatenation; a window never spans
-        # two recordings.
-        starts, offset = [], 0
+        # two recordings. `local` is each start's step within its recording.
+        starts, local, offset = [], [], 0
         for r in recordings:
             n = len(r.action) - length + 1
             if n > 0:
                 starts.append(offset + np.arange(n))
+                local.append(np.arange(n))
             offset += len(r.action)
         if not starts:
             raise ValueError(f"no recording has {length} steps")
         self.starts = torch.from_numpy(np.concatenate(starts)).to(device)
+        self.local = torch.from_numpy(np.concatenate(local)).to(device)
         self._steps = torch.arange(length, device=device)
 
     def __len__(self) -> int:
         return len(self.starts)
+
+    def fold_of(self, index: torch.Tensor, block: int) -> torch.Tensor:
+        """The fold, 0 or 1, of the windows at `index`: their recordings cut
+        into blocks of `block` steps, alternately fold 0 and fold 1, by where
+        each window starts. Blocks keep the overlapping windows of one
+        stretch of time together, so one fold says little about the other."""
+        return (self.local[index] // block) % 2
+
+    def keep_fold(self, block: int, fold: int):
+        """Keeps only the windows starting in `fold`'s blocks."""
+        keep = self.fold_of(torch.arange(len(self.starts), device=self.starts.device), block) == fold
+        self.starts, self.local = self.starts[keep], self.local[keep]
 
     def sample(self, n: int, generator: torch.Generator | None = None) -> torch.Tensor:
         """`n` window indices, uniform and with replacement."""
