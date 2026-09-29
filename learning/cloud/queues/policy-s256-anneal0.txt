@@ -1,0 +1,7 @@
+# One-step recipes for the annealed policy: from scratch in the 256 x 3
+# stochastic model, tau rising linearly from 0 (its mean) to 1 (sampled)
+# over the run, evaluated at the same tau; 8,000 iterations, the two-step
+# path's total (ppo-s256-mean's 3,000, then ppo-s256-anneal's 5,000), and
+# 5,000, the usual length.
+policy ppo-s256-anneal0-8k imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set 'world_model="runs/world_model/sc-w256-d3-cd200k/model.pt"' --set action_step=18 --set action_bins=15 --set eval_rollouts=16 --set eval_every=50 --set 'recordings=["1790282998", "1790279628", "1790281442", "1790372784", "1790378922", "1790464876", "1790611952", "1790619529", "1790627097", "1790636499", "1790645280"]' --iterations 8000 --set tau_start=0.0 --set tau_end=1.0
+policy ppo-s256-anneal0-5k imagination/configs/wm-stoch.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set 'world_model="runs/world_model/sc-w256-d3-cd200k/model.pt"' --set action_step=18 --set action_bins=15 --set eval_rollouts=16 --set eval_every=50 --set 'recordings=["1790282998", "1790279628", "1790281442", "1790372784", "1790378922", "1790464876", "1790611952", "1790619529", "1790627097", "1790636499", "1790645280"]' --iterations 5000 --set tau_start=0.0 --set tau_end=1.0

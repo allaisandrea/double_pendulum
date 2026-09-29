@@ -28,3 +28,5 @@ ppo-stoch-it1      runs/policy/ppo-stoch-it1/policy.pt                    new
 ppo-stoch-it2      runs/policy/ppo-stoch-it2/policy.pt                    new
 ppo-stoch-it3      runs/policy/ppo-stoch-it3/policy.pt                    new
 ppo-stoch-it4      runs/policy/ppo-stoch-it4/policy.pt                    new
+ppo-s256           runs/policy/ppo-s256/policy.pt                    new
+ppo-s256-mean      runs/policy/ppo-s256-mean/policy.pt                    new
