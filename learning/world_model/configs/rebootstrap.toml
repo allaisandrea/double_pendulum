@@ -1,0 +1,37 @@
+# The rebootstrap (2026-09-30): after a tag on the rig moved, the loop of
+# collection, world model and policy starts over on new data only, from
+# ppo-s256-anneal0-5k. The chosen stochastic world model (256 x 3, gradient
+# clipping), trained for 50k steps on every collection since, which the
+# loop sets each iteration; no validation sets.
+data_dir = "data"
+train = []
+
+window = 16
+hidden = 256
+layers = 3
+stochastic = true
+nll_beta = 0.5
+
+batch_size = 4096
+lr = 2e-3
+warmup_steps = 1000
+cooldown_fraction = 0.2
+weight_decay = 1e-4
+steps = 50000
+max_grad_norm = 1.0
+bce_weight = 0.1
+seed = 0
+compile = true
+bf16 = true
+
+log_every = 50
+eval_every = 10000
+checkpoint_every = 25000
+eval_samples = 4096
+eval_stride = 16
+eval_ensemble = 8
+horizons = [1, 4, 16, 64, 125]
+
+wandb_project = "double-pendulum-world-model"
+
+val = {}
