@@ -1,12 +1,12 @@
 #!/bin/bash
 # Runs the ranking pool on the rig, from the repository root:
 #
-#   learning/imagination/ranking/collect.sh [SECONDS] [SEED] [POOL]
+#   learning/imagination/ranking/collect.sh [SECONDS] [SEED] [POOL] [ACTIVE] [REST]
 #
 # Each policy in POOL (learning/imagination/ranking/pool.txt; the first
 # word of each line is a policy's name), exported to
 # learning/runs/ranking/<name>.json by `imagination.ranking export`, runs
-# greedily for SECONDS (120), driving 10 s and resting 5 s, without the
+# greedily for SECONDS (120), driving ACTIVE s (10) and resting REST s (5), without the
 # speed governor, in an order shuffled with SEED (0). Each run starts after
 # 15 s of rest, so from the pendulum hanging, and 120 s ends in a rest.
 # recordings/ranking-<stamp>-seed<SEED>.tsv lists each policy and its
@@ -19,6 +19,8 @@ cd "$(dirname "$0")/../../.." || exit 1
 SECONDS_PER=${1:-120}
 SEED=${2:-0}
 POOL=${3:-learning/imagination/ranking/pool.txt}
+ACTIVE=${4:-10}
+REST=${5:-5}
 STAMP=$(date +%s)
 MANIFEST=recordings/ranking-$STAMP-seed$SEED.tsv
 LOGS=recordings/ranking-$STAMP-seed$SEED-logs
@@ -44,7 +46,7 @@ for name in $ORDER; do
     wait "$child"
     echo "$(date +%H:%M:%S) $name"
     ./harness/target/debug/collect --policy "learning/runs/ranking/$name.json" --max-speed 0 \
-        --active-s 10 --rest-s 5 --duration "$SECONDS_PER" > "$LOGS/$name.log" 2>&1 &
+        --active-s "$ACTIVE" --rest-s "$REST" --duration "$SECONDS_PER" > "$LOGS/$name.log" 2>&1 &
     child=$!
     wait "$child"
     status=$?

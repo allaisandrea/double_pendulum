@@ -183,14 +183,15 @@ def anneal():
 
 
 def rig_stats(manifests: list[str], out: Path):
-    """Per policy, over the ranking's drives (each after the first, 10 s):
+    """Per policy, over the ranking's drives (each after the first, on the
+    recording's own duty cycle):
     the share of frames with each arm within 30° of upright, all three,
     and the share of actions beyond ±64, ±96 and at ±126 or more."""
     import csv
     import numpy as np
     from common.data_lib import ACTION_SCALE, correct_yaws, hanging_yaws, load_recording, load_recordings
     from common.render_lib import fill_unseen
-    from imagination.ranking_lib import capture_times
+    from imagination.ranking_lib import capture_times, duty
     from imagination.sim2real import HANGING
 
     hanging = hanging_yaws(load_recordings(Path("data"), HANGING)).numpy()
@@ -202,7 +203,8 @@ def rig_stats(manifests: list[str], out: Path):
             f = Path(rec) / "frames.arrows"
             r = load_recording(f)
             at = capture_times(f, len(r.action))
-            drive = ((at % 15) < 10) & (at >= 15)
+            active, rest = duty(f)
+            drive = ((at % (active + rest)) < active) & (at >= active + rest)
             cos = correct_yaws(fill_unseen(r.obs, r.present), hanging)[..., 1]
             a, up = np.round(r.action * ACTION_SCALE)[drive], (cos > up_cos)[drive]
             frames.setdefault(name, []).append((a, up))

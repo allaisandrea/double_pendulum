@@ -50,6 +50,7 @@ def test_episodes_start_after_each_rest_and_score_the_drive(tmp_path):
 
     eps = episodes(path, STRAIGHT, history=17)
     assert [round(e.real, 3) for e in eps] == [3.0, -3.0]
+    assert [round(e.real, 3) for e in episodes(path, STRAIGHT, history=17, seconds=5)] == [3.0, -3.0]
     assert eps[0].start.obs.shape == (1, 17, 3, 2)
     # The start window ends just before the drive at 15 s: still hanging.
     assert np.allclose(eps[0].start.obs[0, -1, :, 1].numpy(), -1.0)
@@ -91,3 +92,23 @@ def test_a_world_model_spec_may_carry_its_own_tau():
     assert world_model_spec("runs/world_model/stoch-b05/model.pt@0", 1.0) == (
         "stoch-b05@0", Path("runs/world_model/stoch-b05/model.pt"), 0.0)
     assert world_model_spec("runs/world_model/wm3/model.pt", 1.0) == ("wm3", Path("runs/world_model/wm3/model.pt"), 1.0)
+
+
+def test_episodes_follow_the_duty_cycle_the_recording_says(tmp_path):
+    # 30 s on, 8 s off, for 120 s: drives at 38 and 76 s (the one at 114 s
+    # does not finish). Arms up during the drive at 38 s only.
+    import pyarrow as pa, pyarrow.ipc as ipc
+    n = 120 * 125
+    t = np.arange(n) * 0.008
+    up = (t >= 38) & (t < 68)
+    path = tmp_path / "frames.arrows"
+    write_frames(path, list(range(n)), [[pose(0.0 if u else np.pi)] * 3 for u in up], [0] * n)
+    with ipc.open_stream(path) as f:
+        table = f.read_all()
+    table = table.append_column("t_capture", pa.array((t * 1e9).astype("int64")).cast(pa.duration("ns")))
+    table = table.replace_schema_metadata({"active_ns": str(30 * 10**9), "rest_ns": str(8 * 10**9)})
+    with ipc.new_stream(path, table.schema) as w:
+        w.write_table(table)
+    from imagination.ranking_lib import duty
+    assert duty(path) == (30.0, 8.0)
+    assert [round(e.real, 3) for e in episodes(path, STRAIGHT, history=17)] == [3.0, -3.0]

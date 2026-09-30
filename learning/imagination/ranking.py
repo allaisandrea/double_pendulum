@@ -35,7 +35,7 @@ from common.data_lib import hanging_yaws, load_recordings
 from common.run_lib import pick_device
 from imagination.export_lib import export_policy
 from imagination.agent_lib import Agent
-from imagination.ranking_lib import (Scores, agreements, episodes, exploitation_gap, imagined, read_scores,
+from imagination.ranking_lib import (Scores, agreements, duty, episodes, exploitation_gap, imagined, read_scores,
                                      sampled, write_agreements, write_scores)
 from imagination.rollout_lib import load_policy
 from imagination.sim2real import HANGING
@@ -97,18 +97,19 @@ def imagine(args):
     for name, paths in recordings.items():
         checkpoint, was_seen = pool[name]
         agent, env, cfg = load_policy(checkpoint, device)
-        groups = []  # (episodes, greedy) per recording
+        groups = []  # (episodes, greedy, seconds scored) per recording
         for recording in paths:
             frames = Path(recording) / "frames.arrows"
-            groups.append((episodes(frames, hanging, env.history, seconds=args.seconds), not sampled(frames)))
-        eps = [e for group, _ in groups for e in group]
+            seconds = args.seconds or duty(frames)[0]
+            groups.append((episodes(frames, hanging, env.history, seconds), not sampled(frames), seconds))
+        eps = [e for group, _, _ in groups for e in group]
         scores = np.array([e.real for e in eps])
         row = []
         for m, model in models.items():
             env.model, env.tau = model, taus[m]
             # Each recording's starts, weighted by how many episodes it has.
-            parts = [(imagined(agent, env, [e.start for e in group], args.seconds, args.rollouts, args.seed, greedy), len(group))
-                     for group, greedy in groups if group]
+            parts = [(imagined(agent, env, [e.start for e in group], seconds, args.rollouts, args.seed, greedy), len(group))
+                     for group, greedy, seconds in groups if group]
             v = sum(value * n for value, n in parts) / sum(n for _, n in parts)
             predicted[m].append(v)
             row.append(v)
@@ -161,7 +162,7 @@ def main():
                    help="checkpoints, each PATH or PATH@TAU for a stochastic model's own tau")
     v.add_argument("--scores", type=Path, required=True, help="the CSV to write the scores to")
     v.add_argument("--pool", type=Path, default=POOL)
-    v.add_argument("--seconds", type=float, default=10.0)
+    v.add_argument("--seconds", type=float, help="of each drive to score (default: all of it)")
     v.add_argument("--rollouts", type=int, default=8, help="per episode start")
     v.add_argument("--seed", type=int, default=0)
     v.add_argument("--tau", type=float, default=1.0,

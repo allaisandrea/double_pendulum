@@ -37,6 +37,16 @@ def sampled(recording: Path) -> bool:
     return meta.get(b"policy_sample", b"false") == b"true"
 
 
+def duty(recording: Path) -> tuple[float, float]:
+    """The recording's duty cycle, seconds driving and resting, from the
+    metadata collect writes; 10 and 5 for a recording without it."""
+    with ipc.open_stream(recording) as f:
+        meta = f.schema.metadata or {}
+    if b"active_ns" not in meta:
+        return 10.0, 5.0
+    return int(meta[b"active_ns"]) / 1e9, int(meta[b"rest_ns"]) / 1e9
+
+
 def capture_times(recording: Path, steps: int) -> np.ndarray:
     """Seconds since t0 of each step of load_recording's layout (one per
     camera frame, dropped frames interpolated)."""
@@ -47,9 +57,12 @@ def capture_times(recording: Path, steps: int) -> np.ndarray:
     return np.interp(np.arange(steps), frame - frame[0], capture)
 
 
-def episodes(recording: Path, hanging: np.ndarray, history: int, active_s: float = 10.0,
-             rest_s: float = 5.0, seconds: float = 10.0) -> list[Episode]:
-    """The episodes of a ranking recording, as the module docstring says."""
+def episodes(recording: Path, hanging: np.ndarray, history: int, seconds: float | None = None) -> list[Episode]:
+    """The episodes of a ranking recording, as the module docstring says: its
+    drives after the first, on its own duty cycle, each scored over its
+    first `seconds` (default: the whole drive)."""
+    active_s, rest_s = duty(recording)
+    seconds = active_s if seconds is None else seconds
     r = load_recording(recording)
     at = capture_times(recording, len(r.action))
     corrected = correct_yaws(fill_unseen(r.obs, r.present), hanging)
