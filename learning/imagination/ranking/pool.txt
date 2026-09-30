@@ -34,3 +34,5 @@ ppo-s256-anneal@1750 runs/policy/ppo-s256-anneal/checkpoints/iter_001750.pt new
 ppo-s256-anneal    runs/policy/ppo-s256-anneal/policy.pt             new
 ppo-s256-anneal0-5k runs/policy/ppo-s256-anneal0-5k/policy.pt new
 ppo-s256-anneal0-8k runs/policy/ppo-s256-anneal0-8k/policy.pt new
+ppo-s256-anneal-512x3 runs/policy/ppo-s256-anneal-512x3/policy.pt new
+ppo-s256-anneal-30s runs/policy/ppo-s256-anneal-30s/policy.pt new

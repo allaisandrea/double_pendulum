@@ -1,0 +1,5 @@
+# The standard recipe (wm-s256-anneal.toml: tau annealed, 512 x 3 policy) in
+# the world models trained with all the 30-second-drive data: 256 x 3 and
+# 512 x 3; against ppo-s256-anneal-512x3, trained in the model without it.
+policy ppo-ld2-s256 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set 'world_model="runs/world_model/s256-long-drives-2/model.pt"'
+policy ppo-ld2-s512x3 imagination/configs/wm-s256-anneal.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge,g4dn.xlarge -- --set 'world_model="runs/world_model/s512x3-long-drives-2/model.pt"'

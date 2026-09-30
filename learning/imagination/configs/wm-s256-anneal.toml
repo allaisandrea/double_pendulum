@@ -1,8 +1,9 @@
 # The annealed recipe (2026-09-29): the 256 x 3 stochastic world model the
 # scaling study chose, its noise rising from its mean (tau 0) to its own
-# spread (tau 1) over training, and 15 actions to ±126. Its policy
-# ppo-s256-anneal0-5k scored +2.21 on the rig, against +2.06 trained at tau 1
-# throughout and +1.76 at tau 0.
+# spread (tau 1) over training, 15 actions to ±126, and actor and critic
+# each 512 x 3. With 256 x 2, ppo-s256-anneal0-5k scored +2.21 on the rig,
+# against +2.06 trained at tau 1 throughout and +1.76 at tau 0; with 512 x 3
+# (ppo-s256-anneal-512x3), +2.42 on 30-second drives against +2.34.
 # The world model checkpoint, and the recordings whose windows start episodes.
 world_model = "runs/world_model/sc-w256-d3-cd200k/model.pt"
 # Each imagined frame is drawn with its spread scaled by tau, rising
@@ -33,8 +34,8 @@ sample_missing = true
 speed_limits_rev_s = [2.0, 2.5, 6.5]
 speed_penalty = 1.0
 
-hidden = 256
-layers = 2
+hidden = 512
+layers = 3
 
 # The share of episode starts drawn from windows whose last frame has every
 # arm within 30° of upright; the rest are drawn uniformly.
