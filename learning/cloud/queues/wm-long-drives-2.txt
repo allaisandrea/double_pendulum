@@ -1,0 +1,4 @@
+# The stochastic world model on all the 30-second-drive data (3.8 hours),
+# at the chosen 256 x 3 and at 512 x 3, same schedule.
+world_model s256-long-drives-2 world_model/configs/stochastic-3.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge
+world_model s512x3-long-drives-2 world_model/configs/stochastic-3.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set hidden=512

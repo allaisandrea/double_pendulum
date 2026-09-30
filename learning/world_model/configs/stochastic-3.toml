@@ -1,0 +1,70 @@
+# The chosen stochastic world model's recipe (256 x 3, 240k steps, the last
+# 40k cooling down, gradient clipping) on stochastic.toml's data and all the
+# 30-second-drive collections of ppo-s256-anneal0-5k, sampled (2026-09-29,
+# 3.8 hours), validated also on the first one's 5-minute recording.
+# world_model/configs/stochastic-2.toml had the first 50 minutes of them.
+data_dir = "data"
+# The original training recordings (5.2 h); the ranking sessions' greedy
+# runs of 24 policies (about 1.5 h); and the five 60-minute collections of
+# the world model / policy / data loop (ppo-stoch with bursts to ±96,
+# ppo-stoch-it1 and it2, ppo-stoch-it3 with bursts to ±127, ppo-stoch-it4).
+train = [
+    "1790282998", "1790279628", "1790372784", "1790378922", "1790464876",
+    "1790523625", "1790523763", "1790523901", "1790524038", "1790524176", "1790524314",
+    "1790524452", "1790524589", "1790524727", "1790524865", "1790525003", "1790525140",
+    "1790525278", "1790525416", "1790525554", "1790525692", "1790525830", "1790525968",
+    "1790526105", "1790526243", "1790526381", "1790526519", "1790526656", "1790526794",
+    "1790526932", "1790527070", "1790541861", "1790541999", "1790543421", "1790543559",
+    "1790543696", "1790543834", "1790544948", "1790545086", "1790545224", "1790545362",
+    "1790545500", "1790545637", "1790545775", "1790545913", "1790548281", "1790548419",
+    "1790611952", "1790619529", "1790627097", "1790636499", "1790645280",
+    "1790716300", "1790721853", "1790725492", "1790727759", "1790731399",
+]
+
+window = 16
+hidden = 256
+layers = 3
+stochastic = true
+nll_beta = 0.5
+
+batch_size = 4096
+lr = 2e-3
+warmup_steps = 1000
+cooldown_fraction = 0.2
+weight_decay = 1e-4
+steps = 240000
+cooldown_steps = 40000
+max_grad_norm = 1.0
+bce_weight = 0.1
+seed = 0
+compile = true
+bf16 = true
+
+log_every = 50
+eval_every = 10000
+checkpoint_every = 25000
+# The training set is scored on a fixed random sample of eval_samples
+# windows; the validation sets on every eval_stride-th start position
+# (128 ms apart), uniform in time; stochastic models also as an ensemble of
+# eval_ensemble sampled rollouts per window.
+eval_samples = 4096
+eval_stride = 16
+eval_ensemble = 8
+horizons = [1, 4, 16, 64, 125]
+
+wandb_project = "double-pendulum-world-model"
+
+# val_all pools every validation recording (45 minutes): the random walk,
+# the three policies of the original collections, and the five loop
+# collections. It is the one to judge by; the others break it down.
+[val]
+val_all = [
+    "1790281442", "1790374602", "1790378604", "1790464558",
+    "1790611634", "1790619211", "1790626779", "1790636181", "1790644962",
+]
+val_random_walk = ["1790281442"]
+val_policy_wm3 = ["1790464558"]
+val_ppo_stoch_it4 = ["1790644962"]
+# The 30-second-drive collection's validation recording, not in val_all, so
+# that val_all stays the scaling study's.
+val_long_drives = ["1790715979"]
