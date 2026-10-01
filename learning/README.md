@@ -124,7 +124,8 @@ The configs:
   250k).
 - `flow.toml` is a flow model of the rig as it is now, 256 × 3 with a
   256 × 2 head, on every collection since the tag moved (greedy tests left
-  out) but two 20-minute collections of 2026-10-01, held out as `val_all`;
+  out) but two 20-minute collections of 2026-10-01, held out as `val_all`,
+  for 250k steps;
   `--set flow=false` trains the rebootstrap's Gaussian on the same split,
   to compare with.
 
@@ -158,7 +159,7 @@ bfloat16 on CUDA; evaluation stays float32), `checkpoint_every`,
 `nll_beta` (0) and `logvar_min`, `eval_stride` and `eval_ensemble` (see
 Metrics), the two-stage keys `mean_model`, `mean_folds`,
 `train_fold` and `fold_block`, and the flow keys `flow`, `flow_hidden`,
-`flow_layers`, `flow_steps` and `nll_steps`. Policies take a stochastic model's `tau`
+`flow_layers`, `flow_steps`, `nll_steps` and `eval_ensemble_stride`. Policies take a stochastic model's `tau`
 from their config, and `imagination.ranking imagine` from `--tau`.
 
 Every `checkpoint_every` steps, at the steps in `checkpoint_at`, and at
@@ -248,7 +249,8 @@ each set `<set>`:
   the Gaussian's NLL; CRPS and 1 − R² do. Its rollouts follow the flow
   from zero noise.
 - For a stochastic model, `<set>/ensemble/…`: `eval_ensemble` (8)
-  sampled rollouts from each window, at τ = 1, scored as an ensemble:
+  sampled rollouts from each window (or from every
+  `eval_ensemble_stride`-th), at τ = 1, scored as an ensemble:
   `one_minus_r2` of the ensemble's mean, `crps` (the continuous ranked
   probability score over copying the last frame's error: 1 is no better
   than copying, 0 perfect; a proper score, it rewards spread only where

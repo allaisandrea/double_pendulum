@@ -52,7 +52,8 @@ UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
             "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min", "fold_block", "train_fold",
-            "mean_model", "mean_folds", "flow", "flow_hidden", "flow_layers", "flow_steps", "nll_steps"}
+            "mean_model", "mean_folds", "flow", "flow_hidden", "flow_layers", "flow_steps", "nll_steps",
+            "eval_ensemble_stride"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -236,15 +237,19 @@ def main(argv=None):
     # A stochastic model is also scored as an ensemble of sampled rollouts.
     members = cfg.get("eval_ensemble", 8) if model.stochastic else 0
     nll_steps = cfg.get("nll_steps", 32)
+    # The ensemble, the costly part of a flow model's evaluation, scores
+    # every eval_ensemble_stride-th window.
+    ens_stride = cfg.get("eval_ensemble_stride", 1)
 
     def evaluate_all(step) -> dict:
         metrics = {}
         for split, windows in eval_sets.items():
-            for k, v in evaluate(model, windows, eval_index[split], cfg["horizons"], members, nll_steps).items():
+            for k, v in evaluate(model, windows, eval_index[split], cfg["horizons"], members, nll_steps,
+                                 ens_stride).items():
                 metrics[f"{split}/{k}"] = v
             if split in upright_index:
                 for k, v in evaluate(model, windows, upright_index[split], cfg["horizons"], members,
-                                     nll_steps).items():
+                                     nll_steps, ens_stride).items():
                     metrics[f"{split}/upright/{k}"] = v
         shown = [h for h in (16, 64) if h in cfg["horizons"]] or cfg["horizons"][-2:]
         scores = [

@@ -131,6 +131,7 @@ def profile_evaluation(cfg: dict, model: FlowWorldModel, recs, device, t_step: f
     model.eval()
     w, horizons = cfg["window"], cfg["horizons"]
     members, nll_steps = cfg.get("eval_ensemble", 8), cfg.get("nll_steps", 32)
+    ens_stride = cfg.get("eval_ensemble_stride", 1)
     stride = cfg.get("eval_stride")
     sets = {"train": Windows(recs, w + max(horizons), device)}
     sets |= {k: Windows(load_recordings(Path(cfg["data_dir"]), v), w + max(horizons), device)
@@ -146,7 +147,7 @@ def profile_evaluation(cfg: dict, model: FlowWorldModel, recs, device, t_step: f
         for label, idx in ((name, index), (f"{name}/upright", up)):
             if label.endswith("upright") and len(idx) < MIN_UPRIGHT:
                 continue
-            t = timed(device, lambda: evaluate(model, windows, idx, horizons, members, nll_steps), 1)
+            t = timed(device, lambda: evaluate(model, windows, idx, horizons, members, nll_steps, ens_stride), 1)
             total += t
             print(f"evaluation of {label}: {len(idx)} windows, {t:.2f} s", flush=True)
             if name != "train" and label == name:
@@ -155,7 +156,8 @@ def profile_evaluation(cfg: dict, model: FlowWorldModel, recs, device, t_step: f
                     parts = {
                         f"likelihood ({nll_steps} RK4 steps)": lambda: flow_metrics(model, batch, nll_steps),
                         f"rollout on the mean ({max(horizons)} frames)": lambda: rollout(model, batch, max(horizons)),
-                        f"ensemble ({members} members)": lambda: ensemble_metrics(model, batch, horizons, members),
+                        f"ensemble ({members} members, every {ens_stride}th window)":
+                            lambda: ensemble_metrics(model, windows.gather(idx[::ens_stride]), horizons, members),
                     }
                     for part, fn in parts.items():
                         print(f"  {part}: {timed(device, fn, 1):.2f} s", flush=True)

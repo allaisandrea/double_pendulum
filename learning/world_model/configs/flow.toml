@@ -31,7 +31,8 @@ lr = 2e-3
 warmup_steps = 1000
 cooldown_fraction = 0.2
 weight_decay = 1e-4
-steps = 50000
+# The loop's world models' length.
+steps = 250000
 max_grad_norm = 1.0
 bce_weight = 0.1
 seed = 0
@@ -39,11 +40,14 @@ compile = true
 bf16 = true
 
 log_every = 50
-eval_every = 10000
+eval_every = 25000
 checkpoint_every = 25000
 eval_samples = 4096
 eval_stride = 16
 eval_ensemble = 8
+# The ensemble on every 4th window (0.5 s apart): a flow model's ensemble
+# rollouts are most of its evaluation.
+eval_ensemble_stride = 4
 horizons = [1, 4, 16, 64, 125]
 
 wandb_project = "double-pendulum-world-model"

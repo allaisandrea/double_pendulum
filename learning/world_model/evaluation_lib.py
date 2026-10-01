@@ -126,10 +126,10 @@ def flow_metrics(model: FlowWorldModel, batch: Batch, nll_steps: int) -> dict:
 
 @torch.no_grad()
 def evaluate(model: WorldModel | FlowWorldModel, windows: Windows, index, horizons: list[int], members: int = 0,
-             nll_steps: int = 32) -> dict:
+             nll_steps: int = 32, ensemble_stride: int = 1) -> dict:
     """Metrics on the windows at `index`, which hold `window + max(horizons)`
     steps each; for a stochastic model with `members`, also its
-    ensemble_metrics."""
+    ensemble_metrics, on every `ensemble_stride`-th of them."""
     model.eval()
     w, horizon = model.window, max(horizons)
     batch = windows.gather(index)
@@ -155,7 +155,7 @@ def evaluate(model: WorldModel | FlowWorldModel, windows: Windows, index, horizo
             metrics |= calibration(model, batch)
             metrics["nll"] = fit.item()
     if model.stochastic and members:
-        metrics |= ensemble_metrics(model, batch, horizons, members)
+        metrics |= ensemble_metrics(model, windows.gather(index[::ensemble_stride]), horizons, members)
     for h in horizons:
         metrics[f"one_minus_r2/h{h:03d}"] = one_minus_r2(
             pred_change[:, h - 1], change[:, h - 1], mask[:, h - 1]
