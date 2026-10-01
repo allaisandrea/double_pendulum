@@ -31,6 +31,19 @@ and policy) train on the new recordings alone, which the loop that
 collects them names with `--set`. Every other config, the experiments
 doc, and the ranking pools are of the earlier rig.
 
+**The loop** (`imagination/loop.py`) collects on the rig while AWS
+trains: the rig worker records sampled drives of the latest policy in
+fixed-length chunks, staging each to `data/` and S3, and tests each new
+policy greedily before collecting with it; the training worker trains a
+world model on every new-era recording finished so far, then a policy in
+it, exports it and checks the export. Its state and log are in
+`runs/loop/`, and it resumes from them; its docstring has the options.
+
+```sh
+caffeinate -is uv run python -m imagination.loop                    # both workers
+caffeinate -is uv run python -m imagination.loop --rig --chunks 8 --chunk-s 1800
+```
+
 Library modules end in `_lib`, and each has its tests next to it in
 `<module>_test.py`. A package's run configs are in its `configs/`.
 
