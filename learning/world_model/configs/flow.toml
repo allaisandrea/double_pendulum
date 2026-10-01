@@ -1,14 +1,15 @@
 # The flow-matching world model (2026-10-01): the next frame's yaw changes
 # drawn by integrating a learned velocity field (world_model/flow_lib.py),
-# against the rebootstrap's Gaussian on the same data. Trained on the rig as
-# it is now, with its latest full 20-minute collection held out for now.
+# against the rebootstrap's Gaussian on the same data. Trained on every
+# collection of the rig as it is now (greedy tests left out), with two
+# 20-minute collections of 2026-10-01 held out as one validation set.
 # --set flow=false trains the Gaussian (256 x 3, beta-NLL 0.5) on the same
 # split, for comparison.
 data_dir = "data"
 train = [
-    "1790789841", "1790791100", "1790793694", "1790794013", "1790797815", "1790798133", "1790801535",
-    "1790814173", "1790815402", "1790816632", "1790817862", "1790819094", "1790820333", "1790821607",
-    "1790822847", "1790824091", "1790825348", "1790825675", "1790828159", "1790870082",
+    "1790789841", "1790794013", "1790798133", "1790814173", "1790815402", "1790816632", "1790817862",
+    "1790819094", "1790820333", "1790821607", "1790822847", "1790824091", "1790825675", "1790826915",
+    "1790828159", "1790870406", "1790873141", "1790880870",
 ]
 
 window = 16
@@ -48,4 +49,4 @@ horizons = [1, 4, 16, 64, 125]
 wandb_project = "double-pendulum-world-model"
 
 [val]
-val_20min = ["1790826915"]
+val_all = ["1790878360", "1790879599"]

@@ -10,6 +10,14 @@ to bfloat16, on CUDA only), or compile+bf16. Then the time of one
 evaluation of one validation set as world_model.train runs it. Times are
 measured with the device synchronised. --csv also writes the training
 step times, one row per model, batch size and variant.
+
+With --flow, the models are flow_lib.FlowWorldModel with the config's head,
+and the evaluation is timed in full, as world_model.train runs it with the
+config (every set and its upright subset, the ensemble, the likelihood),
+broken down into its parts, with its share of the GPU time at the config's
+eval_every:
+
+    uv run python -m world_model.profile --config world_model/configs/flow.toml --flow --variants compile+bf16
 """
 import argparse
 import csv
@@ -19,9 +27,10 @@ from pathlib import Path
 
 import torch
 
-from common.data_lib import Windows, load_recordings
+from common.data_lib import Windows, hanging_yaws, load_recordings
 from common.run_lib import pick_device, synchronize
-from world_model.evaluation_lib import evaluate
+from world_model.evaluation_lib import ensemble_metrics, evaluate, flow_metrics, rollout
+from world_model.flow_lib import FlowWorldModel, flow_losses
 from world_model.model_lib import WorldModel, losses
 
 
@@ -46,6 +55,7 @@ def main():
                         choices=["plain", "compile", "bf16", "compile+bf16"])
     parser.add_argument("--device", default="auto")
     parser.add_argument("--csv", type=Path, help="also write the step times here")
+    parser.add_argument("--flow", action="store_true", help="profile the config's flow model")
     args = parser.parse_args()
     device = pick_device(args.device)
     device_name = torch.cuda.get_device_name() if device.type == "cuda" else device.type
@@ -62,7 +72,7 @@ def main():
         compile_, bf16 = "compile" in variant, "bf16" in variant
         for depth in args.depths:
             for batch_size in args.batches:
-                model = WorldModel(w, width, depth, 0.05).to(device)
+                model = make_model(cfg, width, depth, args.flow).to(device)
                 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
                 forward = torch.compile(model) if compile_ else model
 
@@ -72,8 +82,9 @@ def main():
                 def step():
                     b = gather()
                     with torch.autocast("cuda", torch.bfloat16, enabled=bf16 and device.type == "cuda"):
-                        mse, bce, _ = losses(forward, b.obs[:, :w], b.present[:, :w], b.action[:, :w],
-                                          b.obs[:, w], b.present[:, w])
+                        fit = flow_losses if args.flow else losses
+                        mse, bce, *_ = fit(forward, b.obs[:, :w], b.present[:, :w], b.action[:, :w],
+                                           b.obs[:, w], b.present[:, w])
                         loss = mse + 0.1 * bce
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
@@ -90,6 +101,10 @@ def main():
                              round(t_step * 1e3, 3), round(t_gather / t_step, 3)])
     if args.csv:
         write_csv(args.csv, rows)
+    if args.flow:
+        model = make_model(cfg, args.widths[0], args.depths[0], True).to(device)
+        profile_evaluation(cfg, model, recs, device, rows[-1][6] / 1e3, g)
+        return
 
     val_name, val_names = next(iter(cfg["val"].items()))
     horizon = max(cfg["horizons"])
@@ -98,6 +113,56 @@ def main():
     model = WorldModel(w, args.widths[0], args.depths[0], 0.05).to(device)
     t_eval = timed(device, lambda: evaluate(model, windows, index, cfg["horizons"]), 3)
     print(f"one evaluation of {val_name} ({len(index)} windows, {horizon} frames, width {args.widths[0]}): {t_eval:.2f} s")
+
+
+def make_model(cfg: dict, width: int, depth: int, flow: bool):
+    if flow:
+        return FlowWorldModel.from_config(cfg | {"hidden": width, "layers": depth}, [0.05] * 3)
+    return WorldModel(cfg["window"], width, depth, 0.05)
+
+
+def profile_evaluation(cfg: dict, model: FlowWorldModel, recs, device, t_step: float, g: torch.Generator):
+    """Times one evaluation of a flow model as world_model.train runs it,
+    each set and its upright subset, and the parts of the validation sets'
+    (the likelihood, the rollout on the mean, the ensemble); then its share
+    of the time at eval_every, against training steps of t_step seconds."""
+    from world_model.train import MIN_UPRIGHT, upright_subset
+
+    model.eval()
+    w, horizons = cfg["window"], cfg["horizons"]
+    members, nll_steps = cfg.get("eval_ensemble", 8), cfg.get("nll_steps", 32)
+    stride = cfg.get("eval_stride")
+    sets = {"train": Windows(recs, w + max(horizons), device)}
+    sets |= {k: Windows(load_recordings(Path(cfg["data_dir"]), v), w + max(horizons), device)
+             for k, v in cfg["val"].items()}
+    hanging = hanging_yaws(recs)
+    total = 0.0
+    for name, windows in sets.items():
+        if stride and name != "train":
+            index = torch.arange(0, len(windows), stride, device=device)
+        else:
+            index = windows.sample(min(cfg["eval_samples"], len(windows)), g)
+        up = upright_subset(windows, index, w, hanging)
+        for label, idx in ((name, index), (f"{name}/upright", up)):
+            if label.endswith("upright") and len(idx) < MIN_UPRIGHT:
+                continue
+            t = timed(device, lambda: evaluate(model, windows, idx, horizons, members, nll_steps), 1)
+            total += t
+            print(f"evaluation of {label}: {len(idx)} windows, {t:.2f} s", flush=True)
+            if name != "train" and label == name:
+                batch = windows.gather(idx)
+                with torch.no_grad():
+                    parts = {
+                        f"likelihood ({nll_steps} RK4 steps)": lambda: flow_metrics(model, batch, nll_steps),
+                        f"rollout on the mean ({max(horizons)} frames)": lambda: rollout(model, batch, max(horizons)),
+                        f"ensemble ({members} members)": lambda: ensemble_metrics(model, batch, horizons, members),
+                    }
+                    for part, fn in parts.items():
+                        print(f"  {part}: {timed(device, fn, 1):.2f} s", flush=True)
+    every = cfg["eval_every"]
+    share = total / (total + every * t_step)
+    print(f"one evaluation: {total:.1f} s; {every} training steps: {every * t_step:.1f} s; "
+          f"evaluation's share at eval_every {every}: {share:.0%}")
 
 
 CSV_HEADER = ["device", "width", "depth", "batch", "parameters", "variant", "ms_per_step", "gather_share"]

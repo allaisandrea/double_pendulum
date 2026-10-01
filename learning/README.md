@@ -123,9 +123,10 @@ The configs:
   `--set train=[...]` (50k steps by default; the pipelined loop runs
   250k).
 - `flow.toml` is a flow model of the rig as it is now, 256 × 3 with a
-  256 × 2 head, on the new recordings but the latest full 20-minute
-  collection, held out as `val_20min`; `--set flow=false` trains the
-  rebootstrap's Gaussian on the same split, to compare with.
+  256 × 2 head, on every collection since the tag moved (greedy tests left
+  out) but two 20-minute collections of 2026-10-01, held out as `val_all`;
+  `--set flow=false` trains the rebootstrap's Gaussian on the same split,
+  to compare with.
 
 `docs/world_model_experiments.md` says why.
 
@@ -189,6 +190,8 @@ uv run python -m world_model.compare runs/world_model/wm3/model.pt runs/world_mo
   batch, rollout and follow-up sweeps.
 - `profile` times training steps across widths, depths, batch sizes and
   variants (plain, compile, bf16) on the real data; `--csv` also writes them.
+  With `--flow`, it profiles the config's flow model, and times its whole
+  evaluation, part by part, with its share of the time at `eval_every`.
 - `report` tabulates the final metrics of every W&B run with a name
   prefix, on each validation set and its upright subset; `--csv` also
   writes them, with each run's training settings.
