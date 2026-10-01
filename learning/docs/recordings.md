@@ -18,14 +18,18 @@ it is now, the earlier ones of the rig as it was, and the two are not mixed.
 
 ## The rig as it is now
 
-23 recordings, 6.0 hours.
+27 recordings, 7.1 hours.
 
 ### 2026-10-01
 
-3 recordings, 0.7 hours.
+7 recordings, 1.8 hours.
 
 | recording | start | min | kind | policy | actions | drive/rest s | tags seen % | used in |
 |---|---|---|---|---|---|---|---|---|
+| `1790880870` | 10-01 11:54 | 20 | collection | ppo-rb2-it1 | sampled; 29 to ±126 | 20/8 | 100/97/100 |  |
+| `1790879599` | 10-01 11:33 | 20 | collection | ppo-rb2-it2 | sampled; 29 to ±126 | 20/8 | 100/97/100 |  |
+| `1790878360` | 10-01 11:12 | 20 | collection | ppo-rb2-it1 | sampled; 29 to ±126 | 20/8 | 100/97/100 |  |
+| `1790873141` | 10-01 09:45 | 7 | collection | ppo-rb2-it2 | sampled; 29 to ±126 | 20/8 | 100/97/100 |  |
 | `1790872817` | 10-01 09:40 | 5 | greedy test (ranking-1790872801-seed1) | ppo-rb2-it1 | greedy; 29 to ±126 | 20/8 | 100/97/100 |  |
 | `1790870406` | 10-01 09:00 | 30 | collection | ppo-rb2-it2 | sampled; 29 to ±126 | 20/8 | 100/97/100 |  |
 | `1790870082` | 10-01 08:54 | 5 | greedy test (ranking-1790870067-seed0) | ppo-rb2-it2 | greedy; 29 to ±126 | 20/8 | 99/96/100 |  |
