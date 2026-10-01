@@ -91,6 +91,17 @@ uv run pytest                                                      # every *_tes
   one that did not see it. It was an attempt at the variance overfitting
   large stochastic models show; it did not beat the plain recipe.
 
+- **A flow model** (`flow`, `world_model/flow_lib.py`) draws the next
+  frame without a set distribution: the change in each tag's yaw (not in
+  its sine and cosine, which given the last frame lie on a circle, where a
+  density is degenerate), all three jointly, carried from standard normal
+  noise along a velocity field the network learns by flow matching. The
+  body encodes the window once; a head `flow_hidden` wide and
+  `flow_layers` deep gives the velocity, integrated in `flow_steps`
+  midpoint steps (2 × `flow_steps` head passes per frame). `tau` scales the
+  starting noise; at 0 the flow starts from zero, which stands in for the
+  mean. It trains one step ahead.
+
 The configs:
 
 - `base.toml` is the one-step deterministic recipe the early models used
@@ -111,6 +122,10 @@ The configs:
   stochastic, no validation sets, its training recordings given with
   `--set train=[...]` (50k steps by default; the pipelined loop runs
   250k).
+- `flow.toml` is a flow model of the rig as it is now, 256 × 3 with a
+  256 × 2 head, on the new recordings but the latest full 20-minute
+  collection, held out as `val_20min`; `--set flow=false` trains the
+  rebootstrap's Gaussian on the same split, to compare with.
 
 `docs/world_model_experiments.md` says why.
 
@@ -140,8 +155,9 @@ the gradient; long rollouts and wide stochastic models need it),
 bfloat16 on CUDA; evaluation stays float32), `checkpoint_every`,
 `checkpoint_at` (a list of steps), `cooldown_steps`, `stochastic`,
 `nll_beta` (0) and `logvar_min`, `eval_stride` and `eval_ensemble` (see
-Metrics), and the two-stage keys `mean_model`, `mean_folds`,
-`train_fold` and `fold_block`. Policies take a stochastic model's `tau`
+Metrics), the two-stage keys `mean_model`, `mean_folds`,
+`train_fold` and `fold_block`, and the flow keys `flow`, `flow_hidden`,
+`flow_layers`, `flow_steps` and `nll_steps`. Policies take a stochastic model's `tau`
 from their config, and `imagination.ranking imagine` from `--tau`.
 
 Every `checkpoint_every` steps, at the steps in `checkpoint_at`, and at
@@ -191,6 +207,8 @@ Logged every `log_every` steps, on the batch just trained on:
   of `delta_scale` (the typical one-frame change), over the tags seen in
   the next frame, averaged over the rollout when `rollout_train` > 1.
 - `train/batch_bce`: the cross-entropy of the missing-tag logits.
+- `train/batch_fm`: for a flow model, instead of `train/batch_mse`, the
+  flow-matching loss: the squared error of the velocity, per element.
 - `lr`: the learning rate.
 
 Every `eval_every` steps, training pauses to evaluate on a fixed sample of
@@ -217,6 +235,15 @@ each set `<set>`:
   `<set>/within_1sd`, `<set>/within_2sd` (the share of one-step changes
   within 1 and 2 predicted standard deviations: 0.683 and 0.954 if
   calibrated) and `<set>/median_sd`.
+- For a flow model, instead of `mse` and the Gaussian's metrics,
+  `<set>/fm` (the flow-matching loss, on noise from a fixed seed), and
+  `<set>/nll` and `<set>/median_nll`: the negative log-likelihood of the
+  next frame's yaw changes, per tag, in radians, over the windows whose
+  next frame has every tag seen, integrated back through the flow in
+  `nll_steps` (32) RK4 steps with the exact divergence. It is a density
+  over angles, not over the sine and cosine, so it does not compare with
+  the Gaussian's NLL; CRPS and 1 − R² do. Its rollouts follow the flow
+  from zero noise.
 - For a stochastic model, `<set>/ensemble/…`: `eval_ensemble` (8)
   sampled rollouts from each window, at τ = 1, scored as an ensemble:
   `one_minus_r2` of the ensemble's mean, `crps` (the continuous ranked

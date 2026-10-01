@@ -142,3 +142,13 @@ def test_a_two_stage_model_fits_its_variance_to_held_out_means(workdir):
     # The mean is the mean model's, whatever the variance network learned.
     assert torch.allclose(model.predict(obs, present, action)[0], mean.predict(obs, present, action)[0], atol=1e-6)
     assert not any(p.requires_grad for p in model.mean_model.parameters())
+
+
+def test_a_flow_model_trains_evaluates_and_loads(workdir):
+    from world_model.flow_lib import FlowWorldModel
+    from world_model.model_lib import load_world_model
+
+    main(["base.toml", "--name", "flow", "--set", "flow=true", "--set", "nll_steps=4", "--set", "eval_ensemble=2",
+          *COMMON])
+    model = load_world_model(workdir / "runs" / "world_model" / "flow" / "model.pt", "cpu")
+    assert isinstance(model, FlowWorldModel) and model.delta_scale.shape == (3,)

@@ -124,11 +124,16 @@ class TwoStageWorldModel(WorldModel):
 
 
 def load_world_model(path, device) -> WorldModel:
-    """A checkpoint train.py saved, frozen, in eval mode. A two-stage model
-    needs its mean model where its config says."""
+    """A checkpoint train.py saved, frozen, in eval mode: a WorldModel, or a
+    flow_lib.FlowWorldModel. A two-stage model needs its mean model where
+    its config says."""
     ck = torch.load(path, map_location=device)
     cfg = ck["config"]
-    if cfg.get("mean_model"):
+    if cfg.get("flow"):
+        from world_model.flow_lib import FlowWorldModel
+
+        model = FlowWorldModel.from_config(cfg, ck["delta_scale"])
+    elif cfg.get("mean_model"):
         model = TwoStageWorldModel(load_world_model(cfg["mean_model"], device), cfg["window"], cfg["hidden"],
                                    cfg["layers"], ck["delta_scale"], cfg.get("logvar_min", LOGVAR_MIN))
     else:

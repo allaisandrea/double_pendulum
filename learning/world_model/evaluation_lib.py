@@ -11,12 +11,15 @@ variance of the actual one. Copying the last observation predicts no
 change, and scores about 1; a perfect model scores 0. The copy-last
 score is logged alongside, computed on the same samples. A stochastic
 model is also scored on its one-step negative log-likelihood per element
-(nll) and calibration.
+(nll) and calibration; a flow model on its flow-matching loss and the
+negative log-likelihood of its yaw changes (flow_metrics). Rollouts of a
+flow model follow its flow from x0 = 0 (tau 0).
 """
 import torch
 from torch.nn import functional as F
 
-from common.data_lib import Batch, Windows
+from common.data_lib import NUM_TAGS, Batch, Windows
+from world_model.flow_lib import FlowWorldModel, flow_losses, yaw_change
 from world_model.model_lib import WorldModel, gaussian_nll, last_seen, losses
 
 
@@ -103,8 +106,27 @@ def calibration(model: WorldModel, batch: Batch) -> dict:
     }
 
 
+def flow_metrics(model: FlowWorldModel, batch: Batch, nll_steps: int) -> dict:
+    """A flow model's one-step metrics: its flow-matching loss (`fm`, over
+    noise and times drawn from a fixed seed) and the cross-entropy of its
+    missing logits; and over the windows whose next frame has every tag seen
+    (with a reference), the negative log-likelihood of the yaw changes, in
+    radians, per tag (`nll`, the mean, and `median_nll`), integrated in
+    `nll_steps` RK4 steps."""
+    w = model.window
+    obs, present, action = batch.obs[:, :w], batch.present[:, :w], batch.action[:, :w]
+    fm, bce = flow_losses(model, obs, present, action, batch.obs[:, w], batch.present[:, w],
+                          torch.Generator().manual_seed(0))
+    ref, has_ref = last_seen(obs, present)
+    full = (batch.present[:, w] & has_ref).all(-1)
+    change = yaw_change(ref[full], batch.obs[full, w])
+    nll = -model.log_prob(obs[full], present[full], action[full], change, nll_steps) / NUM_TAGS
+    return {"fm": fm.item(), "bce": bce.item(), "nll": nll.mean().item(), "median_nll": nll.median().item()}
+
+
 @torch.no_grad()
-def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int], members: int = 0) -> dict:
+def evaluate(model: WorldModel | FlowWorldModel, windows: Windows, index, horizons: list[int], members: int = 0,
+             nll_steps: int = 32) -> dict:
     """Metrics on the windows at `index`, which hold `window + max(horizons)`
     steps each; for a stochastic model with `members`, also its
     ensemble_metrics."""
@@ -117,20 +139,23 @@ def evaluate(model: WorldModel, windows: Windows, index, horizons: list[int], me
     change = target - ref[:, None]
     pred_change = preds - ref[:, None]
 
-    fit, bce, mse = losses(
-        model,
-        batch.obs[:, :w],
-        batch.present[:, :w],
-        batch.action[:, :w],
-        batch.obs[:, w],
-        batch.present[:, w],
-    )
-    metrics = {"mse": mse.item(), "bce": bce.item()}
-    if model.stochastic:
-        metrics |= calibration(model, batch)
-        metrics["nll"] = fit.item()
-        if members:
-            metrics |= ensemble_metrics(model, batch, horizons, members)
+    if isinstance(model, FlowWorldModel):
+        metrics = flow_metrics(model, batch, nll_steps)
+    else:
+        fit, bce, mse = losses(
+            model,
+            batch.obs[:, :w],
+            batch.present[:, :w],
+            batch.action[:, :w],
+            batch.obs[:, w],
+            batch.present[:, w],
+        )
+        metrics = {"mse": mse.item(), "bce": bce.item()}
+        if model.stochastic:
+            metrics |= calibration(model, batch)
+            metrics["nll"] = fit.item()
+    if model.stochastic and members:
+        metrics |= ensemble_metrics(model, batch, horizons, members)
     for h in horizons:
         metrics[f"one_minus_r2/h{h:03d}"] = one_minus_r2(
             pred_change[:, h - 1], change[:, h - 1], mask[:, h - 1]

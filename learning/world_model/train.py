@@ -29,6 +29,9 @@ end, the whole training state goes to
 `model.pt`. --resume continues from a checkpoint in the same directory and
 W&B run. Each phase is timed with the device synchronised, as in policy
 training, and logged at each evaluation.
+
+With `flow`, the model is a flow_lib.FlowWorldModel, trained on the
+flow-matching loss one step ahead.
 """
 import argparse
 import math
@@ -40,6 +43,7 @@ import wandb
 from common.data_lib import Windows, correct_yaws, hanging_yaws, load_recordings
 from common.run_lib import Timer, git_commit, load_config, pick_device, rng_state, set_rng_state
 from common.schedule_lib import trapezoid
+from world_model import flow_lib
 from world_model.evaluation_lib import evaluate
 from world_model.model_lib import (LOGVAR_MIN, TwoStageWorldModel, WorldModel, last_seen, load_world_model,
                                    rollout_losses, variance_losses)
@@ -48,7 +52,7 @@ UPRIGHT_COS = math.cos(math.radians(30))
 # Config keys a run understands without the config file having them.
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
             "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min", "fold_block", "train_fold",
-            "mean_model", "mean_folds"}
+            "mean_model", "mean_folds", "flow", "flow_hidden", "flow_layers", "flow_steps", "nll_steps"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -164,11 +168,22 @@ def main(argv=None):
     upright_index = {k: upright_subset(v, eval_index[k], w, hanging) for k, v in eval_sets.items()}
     upright_index = {k: v for k, v in upright_index.items() if len(v) >= MIN_UPRIGHT}
 
-    scale = change_scale(Windows(train_recs, w + 1, device), 65536, generator)
+    flow = bool(cfg.get("flow"))
+    if flow:
+        # Each tag's typical yaw change, in radians.
+        one = Windows(train_recs, w + 1, device)
+        batch = one.gather(one.sample(65536, generator))
+        scale = flow_lib.change_scale(batch.obs, batch.present, w)
+    else:
+        scale = change_scale(Windows(train_recs, w + 1, device), 65536, generator)
     if ck:
         scale = ck["delta_scale"]
     folds = None
-    if cfg.get("mean_model"):
+    if flow:
+        if rollout_k != 1:
+            raise SystemExit("a flow model trains one step ahead")
+        model = flow_lib.FlowWorldModel.from_config(cfg, scale).to(device)
+    elif cfg.get("mean_model"):
         # The second stage of a two-stage model: a variance for the mean
         # model, trained on each window's mean from the fold model that did
         # not see it.
@@ -212,7 +227,7 @@ def main(argv=None):
     (out / "checkpoints").mkdir(parents=True, exist_ok=bool(args.resume))
     torch.save({k: v.cpu() for k, v in eval_index.items()}, out / "eval_index.pt")
     print(
-        f"{name}: {len(train)} training windows on {device}, delta_scale {scale:.4g}, "
+        f"{name}: {len(train)} training windows on {device}, delta_scale {scale}, "
         f"steps {start + 1}-{cfg['steps']}, cooldown {cooldown}, "
         f"upright eval windows {({k: len(v) for k, v in upright_index.items()})}",
         flush=True,
@@ -220,14 +235,16 @@ def main(argv=None):
 
     # A stochastic model is also scored as an ensemble of sampled rollouts.
     members = cfg.get("eval_ensemble", 8) if model.stochastic else 0
+    nll_steps = cfg.get("nll_steps", 32)
 
     def evaluate_all(step) -> dict:
         metrics = {}
         for split, windows in eval_sets.items():
-            for k, v in evaluate(model, windows, eval_index[split], cfg["horizons"], members).items():
+            for k, v in evaluate(model, windows, eval_index[split], cfg["horizons"], members, nll_steps).items():
                 metrics[f"{split}/{k}"] = v
             if split in upright_index:
-                for k, v in evaluate(model, windows, upright_index[split], cfg["horizons"], members).items():
+                for k, v in evaluate(model, windows, upright_index[split], cfg["horizons"], members,
+                                     nll_steps).items():
                     metrics[f"{split}/upright/{k}"] = v
         shown = [h for h in (16, 64) if h in cfg["horizons"]] or cfg["horizons"][-2:]
         scores = [
@@ -275,7 +292,10 @@ def main(argv=None):
                 index = train.sample(cfg["batch_size"], generator)
                 batch = train.gather(index)
                 with torch.autocast("cuda", torch.bfloat16, enabled=bf16):
-                    if folds:
+                    if flow:
+                        fit, bce = flow_lib.flow_losses(forward, batch.obs[:, :w], batch.present[:, :w],
+                                                        batch.action[:, :w], batch.obs[:, w], batch.present[:, w])
+                    elif folds:
                         fit, bce, mse = variance_losses(model, folds, batch.obs[:, :w], batch.present[:, :w],
                                                         batch.action[:, :w], batch.obs[:, w], batch.present[:, w],
                                                         train.fold_of(index, cfg["fold_block"]))
@@ -290,8 +310,12 @@ def main(argv=None):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["max_grad_norm"])
                 opt.step()
                 if step % cfg["log_every"] == 0:
-                    logged = {"train/batch_mse": mse.item(), "train/batch_bce": bce.item(), "lr": lr}
-                    if model.stochastic:
+                    logged = {"train/batch_bce": bce.item(), "lr": lr}
+                    if flow:
+                        logged["train/batch_fm"] = fit.item()
+                    else:
+                        logged["train/batch_mse"] = mse.item()
+                    if model.stochastic and not flow:
                         logged["train/batch_beta_nll"] = fit.item()
                     wandb.log(logged, step=step)
         metrics = {}
