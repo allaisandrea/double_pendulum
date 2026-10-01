@@ -221,7 +221,7 @@ spins for the last millisecond. It runs for `--active-s` (20), then rests
 for `--rest-s` (5) sending zeros, and repeats, so one recording holds both
 driven motion and the arm settling. The cycle runs on capture time since
 t0. At zero duty the shield brakes the motor: the arm settles damped, not
-free. The firmware caps duty at ±80.
+free. The firmware caps duty at ±127, the whole byte range.
 
 **A trained policy** replaces the stand-in with `--policy`, naming a JSON
 export from `learning` (see [Trained policies](#trained-policies)):
@@ -239,6 +239,21 @@ were: the world model learned the rig's delay from those recordings, so the
 policy was trained with it. It keeps the same rest cycle, which leaves the
 pendulum hanging for each swing-up. The metadata records `policy_file` and
 `policy_sample` in place of `policy_range` and `policy_step`.
+
+**Exploration bursts** (`src/perturb.rs`) add short bursts of a random
+offset to a trained policy's actions, so the recordings show the world
+model what larger and opposing actions do in the states the policy visits:
+
+```sh
+./target/debug/collect --policy <policy.json> --policy-sample --perturb-rate 0.02 --perturb-limit 127
+```
+
+A burst starts on a frame with probability `--perturb-rate` (0, off),
+lasts `--perturb-frames` frames (3 to 8, 24 to 64 ms), and adds one
+offset, uniform in ±`--perturb-offset` (48), to every action in it, the
+sum clipped to ±`--perturb-limit` (96). Bursts are hashes of the seed and
+frame numbers, so a run repeats from its seed. The table's `perturbed`
+column marks the frames in a burst.
 
 **The speed governor** brakes the motor, sending 0 in place of the
 policy's action, while the arm it drives (tag 0's) turns faster than
@@ -271,6 +286,7 @@ camera starts; run parameters are in the schema metadata.
 | `t_policy_start`, `t_policy_done`, `t_sent` | policy ran, action written; null when skipped |
 | `action` | the action in effect after this frame |
 | `governed` | the speed governor sent 0 in place of the policy's action |
+| `perturbed` | the policy's action was offset by an exploration burst |
 
 While it runs, `collect` prints a status line every `--status-every-s` (10):
 frames and how often each tag was seen, actions sent and frames skipped, the
@@ -299,8 +315,9 @@ cd ../harness && cargo run --release --bin check_policy -- ../learning/runs/poli
 ```
 
 `check_policy` loads the export, which runs the checks, and times the
-input and forward pass: about 30 µs on the M4 for a 16-frame window and
-two hidden layers of 256.
+input and forward pass on the M4, for a 16-frame window: about 30 µs with
+two hidden layers of 256, about 200 µs with three of 512, well inside the
+7 ms the action waits.
 
 The input covers the latest `policy_window` frames by camera frame number:
 a frame the camera dropped counts as one with no tag seen, the action

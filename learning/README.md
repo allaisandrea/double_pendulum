@@ -16,10 +16,20 @@ directory.
 - `cloud/`: runs training jobs on EC2 GPU instances.
 - `docs/world_model_experiments.md`: the world model experiments so far
   (profiling, scaling, rollout training, closed-loop fidelity, policy
-  ranking). Its figures are drawn by `docs/figures.py` from the CSVs in
+  ranking, the stochastic world model and its scaling, the loop of world
+  model, policy and data, annealing the model's noise in policy training).
+  Its figures are drawn by `docs/figures.py` from the CSVs in
   `docs/results`, which `docs/results.py` regenerates from W&B, the
   profiling logs and the rig recordings:
   `uv run python -m docs.results && uv run --group docs python docs/figures.py`.
+
+**Two eras of data.** On 2026-09-30 a tag on the rig moved, and policies
+trained on the earlier data stopped working. Recordings from `1790789841`
+on are of the rig as it is now; everything before is of the rig as it
+was. The two are not mixed: the `rebootstrap.toml` configs (world model
+and policy) train on the new recordings alone, which the loop that
+collects them names with `--set`. Every other config, the experiments
+doc, and the ranking pools are of the earlier rig.
 
 Library modules end in `_lib`, and each has its tests next to it in
 `<module>_test.py`. A package's run configs are in its `configs/`.
@@ -47,7 +57,8 @@ uv run pytest                                                      # every *_tes
   in the next frame, plus `bce_weight` times the cross-entropy of the
   missing logits; for a stochastic model, the change's negative
   log-likelihood instead, weighted by its variance to the power `nll_beta`
-  (beta-NLL; 0 is the plain likelihood). With `rollout_train` K above 1, it is averaged over K
+  (beta-NLL; 0 is the plain likelihood). The log-variance is soft-clamped
+  above `logvar_min`. With `rollout_train` K above 1, it is averaged over K
   frames of rollout: the model predicts each frame from its own previous
   predictions, with gradients through the whole rollout
   (`model_lib.rollout_losses`). Training windows are drawn uniformly from
@@ -59,11 +70,35 @@ uv run pytest                                                      # every *_tes
   `--branch` starts a cooldown from any checkpoint: one long run gives
   finished models at many lengths.
 
-`world_model/configs/base.toml` is the one-step recipe the early models
-used (256 × 3, batch 1024). The best model for training policies so far,
-`rollout3-k8`, is 512 × 3 trained on 8-frame rollouts at batch 4096, lr
-2e-3, compiled and in bf16, for 50k steps: its command line is
-`world_model/sweeps/rollout3/rollout3-k8.txt`, and
+- **A two-stage model** (`TwoStageWorldModel`) is a stochastic model whose
+  mean is a frozen deterministic `mean_model`, and whose variance is
+  trained on the residuals of `mean_folds`: two more mean models, each
+  trained on one half of the data (`train_fold` 0 or 1, in alternating
+  blocks of `fold_block` steps), each window's residual coming from the
+  one that did not see it. It was an attempt at the variance overfitting
+  large stochastic models show; it did not beat the plain recipe.
+
+The configs:
+
+- `base.toml` is the one-step deterministic recipe the early models used
+  (256 × 3, batch 1024); `rollout3-k8`, 512 × 3 trained on 8-frame
+  rollouts (`world_model/sweeps/rollout3/rollout3-k8.txt`), was the best
+  deterministic model.
+- `stochastic.toml` is the stochastic recipe of the scaling study: β-NLL
+  (0.5), batch 4096, lr 2e-3, compiled and in bf16, gradients clipped at
+  1, and every validation recording pooled into `val_all`. The model
+  chosen from the study, `sc-w256-d3-cd200k`, is 256 × 3 trained for
+  240k steps (the last 40k cooling down); the standard policy recipe
+  trains in it.
+- `stochastic-2.toml` and `stochastic-3.toml` are the same with the
+  30-second-drive collections added (`s256-long-drives-2` and, at 512 × 3,
+  `s512x3-long-drives-2`); neither scored better, open loop or through
+  the policies trained in them.
+- `rebootstrap.toml` is the recipe for the rig as it is now: 256 × 3,
+  stochastic, no validation sets, its training recordings given with
+  `--set train=[...]` (50k steps by default; the pipelined loop runs
+  250k).
+
 `docs/world_model_experiments.md` says why.
 
 ### Running
@@ -78,19 +113,22 @@ uv run python -m world_model.train --branch runs/world_model/long/checkpoints/st
 ```
 
 The config names the training recordings, and in `val` the validation
-sets, each a list of recordings reported under its own name: `base.toml`
-has `val_random_walk` and one set per policy collection, `val_policy`
-(ppo-speed), `val_policy_wm2` and `val_policy_wm3`.
-`random_walk_only.toml` trains on the random-walk recordings alone, for
-comparison. `--set KEY=VALUE` overrides a config value for a new run
-(VALUE as TOML); besides the config's own keys it takes the optional
-`rollout_train` (1), `max_grad_norm` (clips the gradient; long rollouts
-need it), `compile` and `bf16` (training steps through `torch.compile`,
-and in bfloat16 on CUDA; evaluation stays float32), `checkpoint_every`,
-`checkpoint_at` (a list of steps), `cooldown_steps`, and `stochastic`
-and `nll_beta` (0). A stochastic model is also evaluated on its one-step
-NLL and calibration (`within_1sd`, `within_2sd`: 0.683 and 0.954 if
-calibrated); its open-loop rollouts follow its mean. Policies take `tau`
+sets, each a list of recordings reported under its own name (an empty
+table, `val = {}`, for none): `base.toml` has `val_random_walk` and one
+set per policy collection, `val_policy` (ppo-speed), `val_policy_wm2` and
+`val_policy_wm3`; `stochastic.toml` pools all nine validation recordings
+of the earlier rig into `val_all`, the set to judge by, and keeps a few
+of them as sets of their own. `random_walk_only.toml` trains on the
+random-walk recordings alone, for comparison. `--set KEY=VALUE` overrides
+a config value for a new run (VALUE as TOML); besides the config's own
+keys it takes the optional `rollout_train` (1), `max_grad_norm` (clips
+the gradient; long rollouts and wide stochastic models need it),
+`compile` and `bf16` (training steps through `torch.compile`, and in
+bfloat16 on CUDA; evaluation stays float32), `checkpoint_every`,
+`checkpoint_at` (a list of steps), `cooldown_steps`, `stochastic`,
+`nll_beta` (0) and `logvar_min`, `eval_stride` and `eval_ensemble` (see
+Metrics), and the two-stage keys `mean_model`, `mean_folds`,
+`train_fold` and `fold_block`. Policies take a stochastic model's `tau`
 from their config, and `imagination.ranking imagine` from `--tau`.
 
 Every `checkpoint_every` steps, at the steps in `checkpoint_at`, and at
@@ -145,7 +183,10 @@ Logged every `log_every` steps, on the batch just trained on:
 Every `eval_every` steps, training pauses to evaluate on a fixed sample of
 `eval_samples` windows from the training recordings (`train`) and from
 each validation set (under its name): the same sample every time, drawn
-from `seed`. From each window it rolls the model forward open loop for
+from `seed`. With `eval_stride`, a validation set's windows are instead
+every `eval_stride`-th start, uniform in time over its recordings, so a
+pooled set weighs each recording by its length. From each window it
+rolls the model forward open loop (a stochastic model on its mean) for
 `max(horizons)` frames with the recorded actions, each prediction fed
 back as seen, with its sine and cosine put back on the unit circle. For
 each set `<set>`:
@@ -157,6 +198,19 @@ each set `<set>`:
   0 is perfect.
 - `<set>/copy_last/hNNN`: the same score for predicting no change, which
   comes out at about 1. It is the reference line.
+- For a stochastic model, `<set>/nll` (the one-step loss as trained:
+  β-NLL per element), `<set>/median_nll` (the plain NLL's median, which a
+  few confident misses cannot move as they move the mean),
+  `<set>/within_1sd`, `<set>/within_2sd` (the share of one-step changes
+  within 1 and 2 predicted standard deviations: 0.683 and 0.954 if
+  calibrated) and `<set>/median_sd`.
+- For a stochastic model, `<set>/ensemble/…`: `eval_ensemble` (8)
+  sampled rollouts from each window, at τ = 1, scored as an ensemble:
+  `one_minus_r2` of the ensemble's mean, `crps` (the continuous ranked
+  probability score over copying the last frame's error: 1 is no better
+  than copying, 0 perfect; a proper score, it rewards spread only where
+  the future is uncertain) and `spread_skill` (the ensemble's spread over
+  the error of its mean: 1 if calibrated, below 1 overconfident).
 - `<set>/upright/…`: the same metrics on the set's windows whose last
   input frame has arms 0 and 1 seen and within 30° of upright, the regime
   the policies now live in (when at least 64 such windows are in the
@@ -196,9 +250,13 @@ world model steps.
   action before it. It picks one of `action_bins` int8 actions,
   `action_step` apart and centred on 0 (−64 … 64 in `base.toml`, just past
   the ±60 of the recordings).
-- **Each imagined frame** is the world model's prediction. Each tag is
-  dropped as unseen with the probability the model gives, so the policy
-  meets misses as it will on the rig.
+- **Each imagined frame** is the world model's prediction: for a
+  stochastic model, a draw with its spread scaled by `tau` (0 is the
+  mean). With `tau_start` and `tau_end`, tau rises linearly from one to
+  the other over the run, for training and evaluation alike: the policy
+  learns to balance in the calm mean model, then meets the model's noise.
+  Each tag is dropped as unseen with the probability the model gives, so
+  the policy meets misses as it will on the rig.
 - **The reward** is the sum of the cosines of the tags' yaws, each turned
   so that its hanging yaw reads 180°: a hanging arm scores −1 and an
   upright one +1. The hanging yaws (`hanging_yaws`) are measured over the
@@ -213,22 +271,40 @@ world model steps.
   speeds the world model has data for; the first arm's matches the
   harness's speed governor. The policy maximises the reward net of it.
 
-`imagination/configs/base.toml` trains in `wm3` for 2000 iterations at lr
-1e-3, which found the balancing solution in about an hour on the Mac;
-`wm-k8.toml` is the same in `rollout3-k8`, the world model that best
-predicts the rig, with ppo-wm3's collection among the episode starts.
-`ppo-k8` is 5000 iterations of it.
+The configs:
+
+- `base.toml` trains in `wm3` for 2000 iterations at lr 1e-3, which found
+  the balancing solution in about an hour on the Mac; `wm-k1.toml`,
+  `wm-k6.toml` and `wm-k8.toml` are the same in the deterministic models
+  of the ranking study, and `wm-stoch.toml` in the first stochastic one.
+- `wm-s256-anneal.toml` is the standard recipe for the earlier rig: the
+  256 × 3 stochastic model `sc-w256-d3-cd200k`, tau annealed from 0 to 1,
+  15 actions 18 apart (±126, the motor board's whole range), actor and
+  critic each 512 × 3, 5000 iterations. Its policy,
+  `ppo-s256-anneal-512x3`, scored +2.42 on the rig's 30-second drives.
+  The doc's last section has what else was tried (entropy, episode
+  length, gamma, the input window).
+- `rebootstrap.toml` is the recipe for the rig as it is now: the same,
+  but 29 actions 9 apart (±126), and by default 256 × 2 for 2000
+  iterations; the loop passes `world_model` and `recordings` with `--set`,
+  and for its larger policies `hidden=512`, `layers=3` and
+  `iterations=5000`.
 
 ```sh
-uv run python -m imagination.train imagination/configs/wm-k8.toml --name first
+uv run python -m imagination.train imagination/configs/wm-s256-anneal.toml --name first
 uv run python -m imagination.train imagination/configs/base.toml --name smoke --wandb disabled --iterations 15
 uv run python -m imagination.train imagination/configs/wm-k8.toml --name longer --iterations 5000 --set seed=1
+uv run python -m imagination.train imagination/configs/wm-s256-anneal.toml --name warm \
+    --init runs/policy/first/checkpoints/iter_003000.pt
 uv run python -m imagination.train --resume runs/policy/first/checkpoints/iter_000100.pt
 ```
 
 `world_model` in the config names the world model checkpoint.
 `--set KEY=VALUE` overrides one config value for a new run (VALUE as
 TOML, e.g. `--set gamma=0.998`), for experiments that change one thing.
+`--init` starts a new run from another run's policy and critic (a
+`policy.pt` or a checkpoint), which must have the same inputs and
+actions; the optimizer, schedule and environments start afresh.
 
 Every `checkpoint_every` iterations, and at the end, the whole training
 state (policy and critic, optimizer, schedule, iteration, the
@@ -322,7 +398,8 @@ Averaged over the minibatch updates of each iteration:
 - `train/v_loss`: half the critic's squared error against the return
   targets.
 - `train/entropy`: the entropy of the policy's action distribution, in
-  nats: ln 9 ≈ 2.20 when uniform over the 9 bins, 0 when certain.
+  nats: ln `action_bins` when uniform (ln 15 ≈ 2.71, ln 29 ≈ 3.37), 0
+  when certain.
 - `train/approx_kl`: an estimate of how far each update moved the policy
   from the one that collected the iteration's frames.
 - `train/clipfrac`: the share of samples whose probability ratio left
@@ -361,8 +438,8 @@ Logged at each evaluation (see above):
 - `eval/speed/arm<i>`: each arm's median speed, in revolutions per second.
 - `eval/upright`: the share of its frames with every arm within 30° of
   upright.
-- `eval/mean_abs_action`: the mean |action|, in int8 units (64 means always
-  at a limit).
+- `eval/mean_abs_action`: the mean |action|, in int8 units (the largest
+  action level means always at a limit).
 - `eval/value_hanging`: the critic's value of the hanging start.
 - `eval/value_error`, `eval/value_bias`: the mean absolute and mean signed
   difference between the critic's value along the rollout and the
@@ -381,31 +458,38 @@ At the end of training:
 
 A world model is good to train policies in if it ranks policies the way
 the rig does (after SIMPLER, arXiv:2405.05941). The pool,
-`imagination/ranking/pool.txt`, holds 13 policies spread from +0.08 to
-+2.29 predicted sum of cosines, ten of them new to the rig.
+`imagination/ranking/pool.txt`, holds the policies tested so far, from
++0.08 to about +2.3 on the rig; each line is a name, a checkpoint, and
+whether the policy was on the rig before the pool was made (`seen` or
+`new`). `pool-2.txt` and `pool-3.txt` name the policies of the second
+and third sessions, for `collect.sh`.
 
 ```sh
 uv run python -m imagination.ranking export                # the pool, as runs/ranking/<name>.json
 learning/imagination/ranking/collect.sh 120 0              # from the repository root, at the rig
 learning/imagination/ranking/collect.sh 120 1              # a second pass, in another order
+learning/imagination/ranking/collect.sh 300 0 POOL 30 8    # 5 minutes each, 30 s drives, 8 s rests
 uv run python -m imagination.ranking imagine ../recordings/ranking-*-seed0.tsv ../recordings/ranking-*-seed1.tsv \
-    --world-models runs/world_model/rollout3-k8/model.pt runs/world_model/rollout-k16/model.pt \
+    --world-models runs/world_model/sc-w256-d3-cd200k/model.pt runs/world_model/rollout3-k8/model.pt@0 \
     --scores runs/ranking/scores.csv
 uv run python -m imagination.ranking agreement runs/ranking/scores.csv   # the metrics again, no rollouts
 ```
 
-`collect.sh` runs each policy greedily for 2 minutes, driving 10 s and
-resting 5 s, in a seeded random order, about 30 minutes a pass; two
+`collect.sh [SECONDS] [SEED] [POOL] [ACTIVE] [REST]` runs each policy in
+POOL greedily for SECONDS (120), driving ACTIVE s (10) and resting REST s
+(5), in an order shuffled with SEED, without the speed governor; two
 passes in different orders average out drift over a session; `kill -INT
 $(cat recordings/ranking.pid)` stops it. `imagine` takes any number of
 manifests, pools each policy's recordings, splits them into their drives
-after a rest (7 per 2 minutes), scores each on the rig (mean sum of
-cosines over its first 10 s) and in each world model, from rollouts
-started at the same recorded frames, greedy or sampled as the recording
-was. It prints each policy's rig score with its standard error and the
-predictions, and writes them, with the world model each policy trained
-in, to `--scores`. This is the slow part: about 40 s per world model for
-13 policies on the Mac.
+after a rest, on each recording's own duty cycle (read from its
+metadata), drops the first, and scores each on the rig (the mean sum of
+cosines over the drive, or its first `--seconds`) and in each world
+model, from rollouts started at the same recorded frames, greedy or
+sampled as the recording was. A stochastic world model draws at `--tau`
+(1), or at the TAU of a `PATH@TAU` entry. It prints each policy's rig
+score with its standard error and the predictions, and writes them, with
+the world model each policy trained in, to `--scores`. This is the slow
+part: about 40 s per world model for 13 policies on the Mac.
 
 `agreement` reads those scores and prints, per world model, the Pearson
 and Spearman correlations, the mean maximum rank violation (MMRV), the
@@ -439,8 +523,9 @@ instance (`--on-demand` for one that is not) from AWS's Deep Learning Base
 GPU AMI, trying each of `--instance`'s types (g6, g5 and g6e xlarge by
 default) in each of the account's public subnets until one has capacity.
 Arguments after `--` go to the job. On the instance, `cloud/job.sh`
-installs `uv`, syncs the data, fetches the world model a policy config
-names from the bucket's `runs/`, trains, and syncs the run directory and
+installs `uv`, syncs the data, fetches from the bucket's `runs/` the
+world models the config or a `--set` names and a policy's `--init`
+checkpoint, trains, and syncs the run directory and
 its log to `s3://allais-andrea-store/double_pendulum/runs/<kind>/<name>/`
 every 5 minutes and at the end, with `job_status`. Then the instance
 terminates itself, as it does after `--max-hours` (12) whatever happens.
@@ -462,8 +547,14 @@ and pins other code instead, to carry on under a fix, say.
 
 `queue.py` runs a file of such jobs (`cloud/queues/`), keeping `--spot`
 spot and `--on-demand` on-demand instances busy: it starts pending jobs
-on spot while slots are free, else on demand, starts again any whose
-instance vanished without a status, and leaves failed ones alone.
+on spot while slots are free, else on demand, waits on any already
+running (found by its instance's name tag, so a queue stopped and
+started again picks up where it was), starts again any whose instance
+vanished without a status, and leaves failed ones alone. It launches
+every new job at one commit, HEAD when it starts or `--code`. Spot
+capacity for these GPUs is often unavailable, and the account's
+on-demand quota (8 vCPUs) runs two xlarge instances at a time; policy
+queues add `g4dn.xlarge` (T4, slower) to `--instance` as a fallback.
 
 A policy config's `world_model` must be in the bucket's `runs/` too:
 `aws s3 sync runs/world_model/<name> s3://allais-andrea-store/double_pendulum/runs/world_model/<name>`.
