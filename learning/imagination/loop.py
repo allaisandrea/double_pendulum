@@ -169,9 +169,34 @@ def collect_one(args):
                 "--max-speed", "0", "--active-s", args.active, "--rest-s", args.rest, "--duration", args.chunk_s,
                 "--seed", seed], cwd=REPO, out=OUT / f"collect-{seed}.log")
     rec = Path([l for l in text.splitlines() if l.startswith("recording to ")][0].split()[2]).name
+    if stopping.is_set():
+        raise Stop(f"{rec} was cut short by the stop: not staged")
+    still = motionless_minutes(rec)
+    if still:
+        raise Stop(f"{rec}: the motor arm hardly moved while driven in minutes {still} (motor supply?): not staged")
     stage(rec)
     tags = "; ".join(l.strip() for l in text.splitlines() if "tag " in l and "frames (" in l)
     log(f"recorded {rec} with {policy}: {tags}")
+
+
+def motionless_minutes(rec: str, min_rev_s: float = 0.2) -> list[int]:
+    """The minutes of a recording in which the motor arm's median speed,
+    over the frames the policy drove, stayed under `min_rev_s`: a policy
+    drives it at about 0.5 rev/s, and an unpowered motor leaves it at the
+    0.07 of sensor noise."""
+    text = run(["uv", "run", "-q", "python", "-c", f"""
+import numpy as np
+from pathlib import Path
+from common.data_lib import load_recording
+r = load_recording(Path('../recordings/{rec}/frames.arrows'))
+ang = np.arctan2(r.obs[:, 0, 0], r.obs[:, 0, 1])
+speed = np.abs(np.angle(np.exp(1j * np.diff(ang)))) * 125 / (2 * np.pi)
+ok = r.present[1:, 0] & r.present[:-1, 0] & (r.action[1:] != 0)
+minute = np.arange(len(speed)) // (60 * 125)
+print([int(m) for m in np.unique(minute) if (ok & (minute == m)).sum() > 500
+       and np.median(speed[ok & (minute == m)]) < {min_rev_s}])
+"""])
+    return json.loads(text.strip().splitlines()[-1])
 
 
 def rig_worker(args):
