@@ -1,0 +1,5 @@
+# yaw-flow.txt's three world models with a 512 x 4 body (from 256 x 3); the
+# flow model keeps its 256 x 2 velocity head, so only the body changes.
+world_model cmp-flow-512x4 world_model/configs/flow-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set hidden=512 --set layers=4
+world_model cmp-gauss-512x4 world_model/configs/flow-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set hidden=512 --set layers=4 --set flow=false
+world_model cmp-yawg-512x4 world_model/configs/flow-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set hidden=512 --set layers=4 --set flow=false --set yaw_gaussian=true
