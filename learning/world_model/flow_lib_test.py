@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from world_model.flow_lib import FlowWorldModel, flow_losses, rotate, yaw_change
+from world_model.flow_lib import FlowWorldModel, YawGaussianWorldModel, flow_losses, rotate, yaw_change, yaw_gaussian_losses
 
 
 def unit(*shape):
@@ -64,4 +64,33 @@ def test_the_loss_ignores_tags_unseen_in_the_next_frame_and_trains_every_weight(
     assert torch.equal(losses[0][0], losses[1][0])
     fm, bce = losses[0]
     (fm + bce).backward()
+    assert all(p.grad is not None for p in model.parameters())
+
+
+def test_the_yaw_gaussian_scores_its_normal_and_draws_its_frame_on_the_circle():
+    torch.manual_seed(0)
+    model = YawGaussianWorldModel(4, 8, 1, [0.1, 0.2, 0.5])
+    obs, present, action = unit(64, 4, 3), torch.ones(64, 4, 3, dtype=torch.bool), torch.zeros(64, 4)
+    mean, logit, logvar = model(obs, present, action)
+    change = torch.randn(64, 3) * 0.3
+    expected = torch.distributions.Normal(mean, (0.5 * logvar).exp()).log_prob(change / model.delta_scale).sum(-1)
+    expected -= model.delta_scale.log().sum()
+    assert torch.allclose(model.log_prob(obs, present, action, change), expected, atol=1e-5)
+
+    nxt, _, ref, has_ref = model.predict(obs, present, action)
+    assert torch.allclose(nxt, rotate(ref, mean * model.delta_scale), atol=1e-6)
+    draw = lambda: model.predict(obs, present, action, 1.0, torch.Generator().manual_seed(1))[0]
+    assert torch.equal(draw(), draw()) and not torch.allclose(draw(), nxt)
+    assert draw().norm(dim=-1).allclose(torch.ones(64, 3))
+
+
+def test_the_yaw_gaussian_loss_ignores_tags_unseen_in_the_next_frame():
+    torch.manual_seed(0)
+    model = YawGaussianWorldModel(4, 8, 1, [0.1, 0.1, 0.1])
+    obs, present, action = unit(16, 4, 3), torch.ones(16, 4, 3, dtype=torch.bool), torch.zeros(16, 4)
+    target, target_present = unit(16, 3), torch.rand(16, 3) > 0.3
+    other = torch.where(target_present[..., None], target, unit(16, 3))
+    a, b = (yaw_gaussian_losses(model, obs, present, action, t, target_present, 0.5) for t in (target, other))
+    assert torch.equal(a[0], b[0])
+    (a[0] + a[1]).backward()
     assert all(p.grad is not None for p in model.parameters())

@@ -37,7 +37,7 @@ import torch
 from torch import nn
 
 from common.data_lib import NUM_TAGS
-from world_model.model_lib import STEP_FEATURES, last_seen, step_features
+from world_model.model_lib import LOGVAR_MAX, LOGVAR_MIN, STEP_FEATURES, gaussian_nll, last_seen, soft_clamp, step_features
 
 # Sine and cosine features of t, at frequencies π, 2π, ... TIME_FREQS π.
 TIME_FREQS = 8
@@ -194,6 +194,76 @@ def flow_losses(model: FlowWorldModel, obs, present, action, target, target_pres
     fm = (v.float() - (x1 - x0))[mask].pow(2).mean()
     bce = nn.functional.binary_cross_entropy_with_logits(logit.float(), (~target_present).to(torch.float32))
     return fm, bce
+
+
+
+class YawGaussianWorldModel(nn.Module):
+    """The flow model's Gaussian twin: the same window, body, missing logits
+    and target (each tag's yaw change over its `delta_scale`), drawn from a
+    normal distribution with a diagonal covariance, as WorldModel's change
+    in sin and cos is. It tells what predicting in yaw buys apart from the
+    flow's free-form distribution, and its NLL, in radians per tag, compares
+    with the flow model's."""
+    stochastic = True
+
+    def __init__(self, window: int, hidden: int, layers: int, delta_scale, logvar_min: float = LOGVAR_MIN):
+        super().__init__()
+        self.window = window
+        self.logvar_min = logvar_min
+        self.register_buffer("delta_scale", torch.as_tensor(delta_scale, dtype=torch.float32).reshape(NUM_TAGS))
+        dims = [window * STEP_FEATURES] + [hidden] * layers
+        blocks = []
+        for a, b in zip(dims, dims[1:]):
+            blocks += [nn.Linear(a, b), nn.GELU()]
+        self.body = nn.Sequential(*blocks)
+        # Per tag: the mean and log-variance of its normalised yaw change,
+        # and its missing logit.
+        self.head = nn.Linear(hidden, NUM_TAGS * 3)
+
+    @classmethod
+    def from_config(cls, cfg: dict, delta_scale) -> "YawGaussianWorldModel":
+        return cls(cfg["window"], cfg["hidden"], cfg["layers"], delta_scale, cfg.get("logvar_min", LOGVAR_MIN))
+
+    def forward(self, obs, present, action):
+        """The normalised yaw change's mean [B, NUM_TAGS], the missing logit
+        [B, NUM_TAGS], and the change's log-variance [B, NUM_TAGS]."""
+        b = obs.shape[0]
+        out = self.head(self.body(step_features(obs, present, action).reshape(b, -1))).reshape(b, NUM_TAGS, 3)
+        return out[..., 0], out[..., 1], soft_clamp(out[..., 2], self.logvar_min, LOGVAR_MAX)
+
+    def predict(self, obs, present, action, tau: float = 0.0, generator: torch.Generator | None = None):
+        """As WorldModel.predict: the next observation, its reference turned
+        by a yaw change drawn with its standard deviation scaled by `tau`
+        (0: the mean)."""
+        mean, logit, logvar = self(obs, present, action)
+        x = mean
+        if tau > 0:
+            noise = torch.randn(mean.shape) if generator is None else torch.randn(mean.shape, generator=generator)
+            x = mean + tau * (0.5 * logvar).exp() * noise.to(mean.device)
+        ref, has_ref = last_seen(obs, present)
+        return rotate(ref, x * self.delta_scale), logit, ref, has_ref
+
+    def log_prob(self, obs, present, action, change, steps: int = 0):
+        """The log-density [B] of the yaw changes change [B, NUM_TAGS], in
+        radians, all tags jointly, as FlowWorldModel.log_prob (`steps` is
+        unused)."""
+        mean, _, logvar = self(obs, present, action)
+        x = change / self.delta_scale
+        return -gaussian_nll(x - mean, logvar).sum(-1) - self.delta_scale.log().sum()
+
+
+def yaw_gaussian_losses(model: YawGaussianWorldModel, obs, present, action, target, target_present,
+                        beta: float = 0.0):
+    """The beta-NLL of the normalised yaw changes, per element, over the tags
+    seen in the target that have a reference, and the cross-entropy of the
+    missing logits; in float32."""
+    mean, logit, logvar = model(obs, present, action)
+    ref, has_ref = last_seen(obs, present)
+    mask = target_present & has_ref
+    error = (mean.float() - yaw_change(ref, target) / model.delta_scale)[mask]
+    fit = gaussian_nll(error, logvar.float()[mask], beta).mean()
+    bce = nn.functional.binary_cross_entropy_with_logits(logit.float(), (~target_present).to(torch.float32))
+    return fit, bce
 
 
 @torch.no_grad()

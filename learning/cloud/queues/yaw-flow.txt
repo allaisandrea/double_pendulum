@@ -1,0 +1,6 @@
+# The world models of the rig as it is now, compared on every collection
+# since the tag moved (world_model/configs/flow-2.toml): the flow model, the
+# Gaussian over sin and cos, and the Gaussian over yaw.
+world_model cmp-flow world_model/configs/flow-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge
+world_model cmp-gauss world_model/configs/flow-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set flow=false
+world_model cmp-yawg world_model/configs/flow-2.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set flow=false --set yaw_gaussian=true

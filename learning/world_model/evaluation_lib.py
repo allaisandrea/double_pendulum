@@ -19,7 +19,7 @@ import torch
 from torch.nn import functional as F
 
 from common.data_lib import NUM_TAGS, Batch, Windows
-from world_model.flow_lib import FlowWorldModel, flow_losses, yaw_change
+from world_model.flow_lib import FlowWorldModel, YawGaussianWorldModel, flow_losses, yaw_change, yaw_gaussian_losses
 from world_model.model_lib import WorldModel, gaussian_nll, last_seen, losses
 
 
@@ -124,6 +124,27 @@ def flow_metrics(model: FlowWorldModel, batch: Batch, nll_steps: int) -> dict:
     return {"fm": fm.item(), "bce": bce.item(), "nll": nll.mean().item(), "median_nll": nll.median().item()}
 
 
+def yaw_gaussian_metrics(model: YawGaussianWorldModel, batch: Batch) -> dict:
+    """A yaw-space Gaussian's one-step metrics: its beta-NLL as trained
+    (`fit`, beta 0.5) and the cross-entropy of its missing logits; the
+    NLL of the yaw changes in radians per tag (`nll`, `median_nll`) over the
+    windows whose next frame has every tag seen, as flow_metrics; and its
+    calibration, the share of the seen tags' changes within 1 and 2
+    standard deviations."""
+    w = model.window
+    obs, present, action = batch.obs[:, :w], batch.present[:, :w], batch.action[:, :w]
+    fit, bce = yaw_gaussian_losses(model, obs, present, action, batch.obs[:, w], batch.present[:, w], 0.5)
+    ref, has_ref = last_seen(obs, present)
+    full = (batch.present[:, w] & has_ref).all(-1)
+    change = yaw_change(ref[full], batch.obs[full, w])
+    nll = -model.log_prob(obs[full], present[full], action[full], change) / NUM_TAGS
+    mean, _, logvar = model(obs, present, action)
+    mask = batch.present[:, w] & has_ref
+    z = ((yaw_change(ref, batch.obs[:, w]) / model.delta_scale - mean) * (-0.5 * logvar).exp()).abs()[mask]
+    return {"fit": fit.item(), "bce": bce.item(), "nll": nll.mean().item(), "median_nll": nll.median().item(),
+            "within_1sd": (z < 1).float().mean().item(), "within_2sd": (z < 2).float().mean().item()}
+
+
 @torch.no_grad()
 def evaluate(model: WorldModel | FlowWorldModel, windows: Windows, index, horizons: list[int], members: int = 0,
              nll_steps: int = 32, ensemble_stride: int = 1) -> dict:
@@ -141,6 +162,8 @@ def evaluate(model: WorldModel | FlowWorldModel, windows: Windows, index, horizo
 
     if isinstance(model, FlowWorldModel):
         metrics = flow_metrics(model, batch, nll_steps)
+    elif isinstance(model, YawGaussianWorldModel):
+        metrics = yaw_gaussian_metrics(model, batch)
     else:
         fit, bce, mse = losses(
             model,

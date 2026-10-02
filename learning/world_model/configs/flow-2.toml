@@ -1,0 +1,58 @@
+# Three world models of the rig as it is now, compared (2026-10-01), all
+# 256 x 3 on the same split: every collection since the tag moved (9 h;
+# greedy tests and the scrapped recordings left out), with flow.toml's two
+# 20-minute collections of 2026-10-01 held out as val_all. As set here, the
+# flow model (flow_steps only sets sampling, so one model serves every step
+# count); --set flow=false the rebootstrap's Gaussian over the change in sin
+# and cos; --set flow=false --set yaw_gaussian=true the Gaussian over the
+# change in yaw, the flow model's twin.
+data_dir = "data"
+train = [
+    "1790789841", "1790794013", "1790798133", "1790814173", "1790815402", "1790816632", "1790817862",
+    "1790819094", "1790820333", "1790821607", "1790822847", "1790824091", "1790825675", "1790826915",
+    "1790828159", "1790870406", "1790873141", "1790880870", "1790882148", "1790883428", "1790884681",
+    "1790891028", "1790892285", "1790893543", "1790894798", "1790896036", "1790897267",
+]
+
+window = 16
+hidden = 256
+layers = 3
+flow = true
+# The velocity head, run flow_steps x 2 times per imagined frame (midpoint).
+flow_hidden = 256
+flow_layers = 2
+flow_steps = 8
+# RK4 steps of the log-likelihood's integral, at evaluation.
+nll_steps = 32
+# The Gaussian's, with flow = false.
+stochastic = true
+nll_beta = 0.5
+
+batch_size = 4096
+lr = 2e-3
+warmup_steps = 1000
+cooldown_fraction = 0.2
+weight_decay = 1e-4
+# The loop's world models' length.
+steps = 250000
+max_grad_norm = 1.0
+bce_weight = 0.1
+seed = 0
+compile = true
+bf16 = true
+
+log_every = 50
+eval_every = 25000
+checkpoint_every = 25000
+eval_samples = 4096
+eval_stride = 16
+eval_ensemble = 8
+# The ensemble on every 4th window (0.5 s apart): a flow model's ensemble
+# rollouts are most of its evaluation.
+eval_ensemble_stride = 4
+horizons = [1, 4, 16, 64, 125]
+
+wandb_project = "double-pendulum-world-model"
+
+[val]
+val_all = ["1790878360", "1790879599"]

@@ -133,6 +133,10 @@ def load_world_model(path, device) -> WorldModel:
         from world_model.flow_lib import FlowWorldModel
 
         model = FlowWorldModel.from_config(cfg, ck["delta_scale"])
+    elif cfg.get("yaw_gaussian"):
+        from world_model.flow_lib import YawGaussianWorldModel
+
+        model = YawGaussianWorldModel.from_config(cfg, ck["delta_scale"])
     elif cfg.get("mean_model"):
         model = TwoStageWorldModel(load_world_model(cfg["mean_model"], device), cfg["window"], cfg["hidden"],
                                    cfg["layers"], ck["delta_scale"], cfg.get("logvar_min", LOGVAR_MIN))

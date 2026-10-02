@@ -152,3 +152,13 @@ def test_a_flow_model_trains_evaluates_and_loads(workdir):
           *COMMON])
     model = load_world_model(workdir / "runs" / "world_model" / "flow" / "model.pt", "cpu")
     assert isinstance(model, FlowWorldModel) and model.delta_scale.shape == (3,)
+
+
+def test_a_yaw_gaussian_model_trains_evaluates_and_loads(workdir):
+    from world_model.flow_lib import YawGaussianWorldModel
+    from world_model.model_lib import load_world_model
+
+    main(["base.toml", "--name", "yawg", "--set", "yaw_gaussian=true", "--set", "nll_beta=0.5",
+          "--set", "eval_ensemble=2", *COMMON])
+    model = load_world_model(workdir / "runs" / "world_model" / "yawg" / "model.pt", "cpu")
+    assert isinstance(model, YawGaussianWorldModel) and model.delta_scale.shape == (3,)

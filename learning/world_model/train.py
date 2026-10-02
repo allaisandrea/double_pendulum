@@ -31,7 +31,9 @@ W&B run. Each phase is timed with the device synchronised, as in policy
 training, and logged at each evaluation.
 
 With `flow`, the model is a flow_lib.FlowWorldModel, trained on the
-flow-matching loss one step ahead.
+flow-matching loss one step ahead; with `yaw_gaussian`, a
+flow_lib.YawGaussianWorldModel, its Gaussian twin, on the beta-NLL of the
+yaw changes one step ahead.
 """
 import argparse
 import math
@@ -53,7 +55,7 @@ UPRIGHT_COS = math.cos(math.radians(30))
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
             "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min", "fold_block", "train_fold",
             "mean_model", "mean_folds", "flow", "flow_hidden", "flow_layers", "flow_steps", "nll_steps",
-            "eval_ensemble_stride"}
+            "eval_ensemble_stride", "yaw_gaussian"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -170,7 +172,10 @@ def main(argv=None):
     upright_index = {k: v for k, v in upright_index.items() if len(v) >= MIN_UPRIGHT}
 
     flow = bool(cfg.get("flow"))
-    if flow:
+    yaw_gaussian = bool(cfg.get("yaw_gaussian"))
+    if flow and yaw_gaussian:
+        raise SystemExit("flow and yaw_gaussian are two kinds of model")
+    if flow or yaw_gaussian:
         # Each tag's typical yaw change, in radians.
         one = Windows(train_recs, w + 1, device)
         batch = one.gather(one.sample(65536, generator))
@@ -180,10 +185,11 @@ def main(argv=None):
     if ck:
         scale = ck["delta_scale"]
     folds = None
-    if flow:
+    if flow or yaw_gaussian:
         if rollout_k != 1:
-            raise SystemExit("a flow model trains one step ahead")
-        model = flow_lib.FlowWorldModel.from_config(cfg, scale).to(device)
+            raise SystemExit("a yaw-space model trains one step ahead")
+        kind = flow_lib.FlowWorldModel if flow else flow_lib.YawGaussianWorldModel
+        model = kind.from_config(cfg, scale).to(device)
     elif cfg.get("mean_model"):
         # The second stage of a two-stage model: a variance for the mean
         # model, trained on each window's mean from the fold model that did
@@ -300,6 +306,10 @@ def main(argv=None):
                     if flow:
                         fit, bce = flow_lib.flow_losses(forward, batch.obs[:, :w], batch.present[:, :w],
                                                         batch.action[:, :w], batch.obs[:, w], batch.present[:, w])
+                    elif yaw_gaussian:
+                        fit, bce = flow_lib.yaw_gaussian_losses(forward, batch.obs[:, :w], batch.present[:, :w],
+                                                                batch.action[:, :w], batch.obs[:, w],
+                                                                batch.present[:, w], cfg.get("nll_beta", 0.0))
                     elif folds:
                         fit, bce, mse = variance_losses(model, folds, batch.obs[:, :w], batch.present[:, :w],
                                                         batch.action[:, :w], batch.obs[:, w], batch.present[:, w],
@@ -318,7 +328,7 @@ def main(argv=None):
                     logged = {"train/batch_bce": bce.item(), "lr": lr}
                     if flow:
                         logged["train/batch_fm"] = fit.item()
-                    else:
+                    elif not yaw_gaussian:
                         logged["train/batch_mse"] = mse.item()
                     if model.stochastic and not flow:
                         logged["train/batch_beta_nll"] = fit.item()
