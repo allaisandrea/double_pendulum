@@ -1,0 +1,3 @@
+# ppo-cmp-flow-tau1 for 5000 iterations: the flow model at tau 1 throughout,
+# the same 256 x 2 recipe.
+policy ppo-cmp-flow-tau1-5k imagination/configs/rebootstrap.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge -- --set 'world_model="runs/world_model/cmp-flow/model.pt"' --set 'recordings=["1790789841", "1790794013", "1790798133", "1790814173", "1790815402", "1790816632", "1790817862", "1790819094", "1790820333", "1790821607", "1790822847", "1790824091", "1790825675", "1790826915", "1790828159", "1790870406", "1790873141", "1790880870", "1790882148", "1790883428", "1790884681", "1790891028", "1790892285", "1790893543", "1790894798", "1790896036", "1790897267"]' --set tau_start=1.0 --set tau_end=1.0 --set iterations=5000
