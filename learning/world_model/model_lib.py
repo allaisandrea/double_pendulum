@@ -145,6 +145,9 @@ def load_world_model(path, device) -> WorldModel:
                            cfg.get("stochastic", False), cfg.get("logvar_min", LOGVAR_MIN))
     model.load_state_dict(ck["model"])
     model.requires_grad_(False)
+    # What it was trained to see (common.data_lib.OBSERVATIONS): its users
+    # load recordings the same way.
+    model.observation = cfg.get("observation", "yaw")
     return model.to(device).eval()
 
 

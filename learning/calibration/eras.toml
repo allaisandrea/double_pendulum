@@ -1,0 +1,15 @@
+# The rig's eras: stretches of recordings with one geometry, where each pivot
+# sits on its link and each tag on its link (common.calibration_lib). A new
+# era starts when the rig itself changes; the camera, which drifts by
+# millimetres between sessions, is fitted for every recording instead. Each
+# era's geometry is calibration/<name>.json, from common.calibrate geometry.
+
+[[era]]
+name = "2026-09"
+first = 0
+note = "From the first recordings until a tag was knocked on 2026-09-30."
+
+[[era]]
+name = "2026-09-30"
+first = 1790789841
+note = "Tags 1 and 2 turned about 3 degrees on their links, tag 2 moved about 3 mm."

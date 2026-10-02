@@ -1,0 +1,4 @@
+# World models on calibrated link angles (common.calibrate): both eras, and
+# the rig as it is now alone; compare with cmp-gauss, on yaws, new era only.
+world_model wm-angles world_model/configs/angles.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge
+world_model wm-angles-new world_model/configs/angles-new.toml --instance g6.xlarge,g5.xlarge,g6e.xlarge

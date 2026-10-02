@@ -83,7 +83,7 @@ def load_policy(path, device) -> tuple[Agent, ImaginedEnv, dict]:
     levels = ck["levels"]
     hanging = ck.get("hanging")
     if hanging is None:
-        hanging = hanging_yaws(load_recordings(Path(cfg["data_dir"]), cfg["recordings"]))
+        hanging = hanging_yaws(load_recordings(Path(cfg["data_dir"]), cfg["recordings"], cfg.get("observation", "yaw")))
     model = load_world_model(cfg["world_model"], device)
     env = ImaginedEnv(
         model,

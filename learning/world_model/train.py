@@ -30,6 +30,10 @@ end, the whole training state goes to
 W&B run. Each phase is timed with the device synchronised, as in policy
 training, and logged at each evaluation.
 
+With `observation` "angles", the model sees each link's calibrated angle
+(common.calibrate) rather than each tag's yaw, and so do the policies
+trained in it.
+
 With `flow`, the model is a flow_lib.FlowWorldModel, trained on the
 flow-matching loss one step ahead; with `yaw_gaussian`, a
 flow_lib.YawGaussianWorldModel, its Gaussian twin, on the beta-NLL of the
@@ -55,7 +59,7 @@ UPRIGHT_COS = math.cos(math.radians(30))
 OPTIONAL = {"checkpoint_at", "checkpoint_every", "cooldown_steps", "compile", "bf16", "rollout_train", "max_grad_norm",
             "stochastic", "nll_beta", "eval_ensemble", "eval_stride", "logvar_min", "fold_block", "train_fold",
             "mean_model", "mean_folds", "flow", "flow_hidden", "flow_layers", "flow_steps", "nll_steps",
-            "eval_ensemble_stride", "yaw_gaussian"}
+            "eval_ensemble_stride", "yaw_gaussian", "observation"}
 # Upright subsets smaller than this are not scored.
 MIN_UPRIGHT = 64
 
@@ -143,7 +147,9 @@ def main(argv=None):
     generator = torch.Generator().manual_seed(cfg["seed"])
 
     data_dir = Path(cfg["data_dir"])
-    train_recs = load_recordings(data_dir, cfg["train"])
+    # What the model sees: each tag's yaw, or each link's calibrated angle.
+    observation = cfg.get("observation", "yaw")
+    train_recs = load_recordings(data_dir, cfg["train"], observation)
     w, horizon = cfg["window"], max(cfg["horizons"])
     # Training windows hold the window and the frames the loss rolls out over.
     rollout_k = cfg.get("rollout_train", 1)
@@ -154,7 +160,7 @@ def main(argv=None):
     eval_sets = {
         "train": Windows(train_recs, w + horizon, device),
         **{
-            set_name: Windows(load_recordings(data_dir, names), w + horizon, device)
+            set_name: Windows(load_recordings(data_dir, names, observation), w + horizon, device)
             for set_name, names in val_sets.items()
         },
     }

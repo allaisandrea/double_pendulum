@@ -41,6 +41,8 @@ def main():
 
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cfg = ck["config"]
+    if cfg.get("observation", "yaw") != "yaw":
+        raise SystemExit(f"{args.checkpoint} sees calibrated angles, which the harness does not compute yet")
     agent = Agent(ck["features"], cfg["hidden"], cfg["layers"], len(ck["levels"]))
     agent.load_state_dict(ck["agent"])
     out = args.out or args.checkpoint.with_name("policy.json")

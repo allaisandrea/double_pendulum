@@ -151,7 +151,9 @@ def main(argv=None):
 
     model = load_world_model(cfg["world_model"], device)
     levels = action_levels(cfg["action_step"], cfg["action_bins"])
-    recordings = load_recordings(Path(cfg["data_dir"]), cfg["recordings"])
+    # The episodes start from the recordings as the world model sees them.
+    cfg["observation"] = model.observation
+    recordings = load_recordings(Path(cfg["data_dir"]), cfg["recordings"], model.observation)
     hanging = hanging_yaws(recordings)
     env_args = (
         model,

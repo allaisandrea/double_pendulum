@@ -82,3 +82,22 @@ def test_folds_alternate_by_blocks_of_each_recordings_steps():
     assert folds.tolist() == [0] * 10 + [1] * 10 + [0] + [0] * 10
     w.keep_fold(10, 1)
     assert w.local.tolist() == list(range(10, 20)) and len(w) == 10
+
+
+def test_angles_load_as_the_observation_in_the_frames_layout(tmp_path):
+    from common.data_lib import ANGLES_FILE, write_angles
+
+    path = tmp_path / "frames.arrows"
+    write_frames(path, frames=[10, 11, 13], poses=[[pose(0.1), pose(0.2), pose(0.3)]] * 3, actions=[5, 6, 7])
+    with pytest.raises(FileNotFoundError):
+        load_recording(path, "angles")
+    angles = np.array([[0.5, np.nan, -1.0], [0.6, 0.1, -1.1], [np.nan] * 3, [0.7, 0.2, -1.2]])
+    write_angles(tmp_path / ANGLES_FILE, angles, {"era": "test"})
+    r = load_recording(path, "angles")
+    assert r.present.tolist() == [[True, False, True], [True] * 3, [False] * 3, [True] * 3]
+    assert r.obs[0, 0] == pytest.approx([np.sin(0.5), np.cos(0.5)], abs=1e-6)
+    assert r.obs[0, 1].tolist() == [0, 0]
+    assert (r.action * ACTION_SCALE).tolist() == [5, 6, 6, 7]
+    write_angles(tmp_path / ANGLES_FILE, angles[:3], {})
+    with pytest.raises(ValueError):
+        load_recording(path, "angles")

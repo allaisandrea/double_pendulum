@@ -5,6 +5,13 @@ tag's yaw, whether each tag was seen, and the action in effect after the
 frame. Frames the camera dropped become steps with no tag seen and the
 action carried over, so every step is one frame period (8 ms at 125 fps).
 
+The observation is one of OBSERVATIONS: "yaw", each tag's in-plane angle
+in the camera's image, or "angles", each link's angle from hanging, as
+common.calibrate computes them from the tags' poses (the rig's geometry
+and the camera's pose calibrated away) and stores them beside the frames
+in angles.arrows. Either way it is a (sin, cos) per tag, seen where the
+tag was, so everything downstream works on both.
+
 A window is `length` consecutive steps of one recording. Windows are drawn
 uniformly from every start position in every recording, so a long
 recording contributes in proportion to its length.
@@ -13,10 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.ipc as ipc
 import torch
 
 NUM_TAGS = 3
+OBSERVATIONS = ("yaw", "angles")
+ANGLES_FILE = "angles.arrows"
 # Seconds between camera frames (125 fps).
 FRAME_S = 0.008
 POSE_LEN = 7
@@ -28,7 +38,7 @@ ACTION_SCALE = 128.0
 @dataclass
 class Recording:
     name: str
-    obs: np.ndarray  # [T, NUM_TAGS, 2] float32: sin and cos of each tag's yaw
+    obs: np.ndarray  # [T, NUM_TAGS, 2] float32: sin and cos of each tag's yaw, or its link's angle
     present: np.ndarray  # [T, NUM_TAGS] bool: whether each tag was seen
     action: np.ndarray  # [T] float32: the action after each step, / ACTION_SCALE
 
@@ -42,8 +52,11 @@ def yaw(pose: np.ndarray) -> np.ndarray:
     return np.arctan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z))
 
 
-def load_recording(path: Path) -> Recording:
-    """Reads a frames.arrows table into one step per camera frame."""
+def load_recording(path: Path, observation: str = "yaw") -> Recording:
+    """Reads a frames.arrows table into one step per camera frame, observed
+    as `observation` (see the module docstring)."""
+    if observation not in OBSERVATIONS:
+        raise ValueError(f"observation {observation!r}: not one of {OBSERVATIONS}")
     with ipc.open_stream(path) as reader:
         table = reader.read_all()
     frame = table["frame"].to_numpy()
@@ -74,12 +87,46 @@ def load_recording(path: Path) -> Recording:
     last_row = np.maximum.accumulate(np.where(has_row, np.arange(steps), 0))
     action = action[last_row]
 
+    if observation == "angles":
+        obs, present = read_angles(path.parent / ANGLES_FILE, steps)
     return Recording(path.parent.name, obs, present, action)
 
 
-def load_recordings(data_dir: Path, names: list[str]) -> list[Recording]:
+def load_recordings(data_dir: Path, names: list[str], observation: str = "yaw") -> list[Recording]:
     """Loads `data_dir/<name>/frames.arrows` for each name."""
-    return [load_recording(Path(data_dir) / n / "frames.arrows") for n in names]
+    return [load_recording(Path(data_dir) / n / "frames.arrows", observation) for n in names]
+
+
+def write_angles(path: Path, angles: np.ndarray, metadata: dict[str, str]):
+    """Writes each step's link angles [T, NUM_TAGS] (radians from hanging,
+    NaN where the link's tag was unseen) as angles.arrows, one row per step
+    of load_recording's layout, with `metadata` (how they were calibrated)."""
+    cols = {f"link{i}": pa.array(angles[:, i], pa.float64(), mask=np.isnan(angles[:, i])) for i in range(NUM_TAGS)}
+    table = pa.table(cols).replace_schema_metadata(metadata)
+    with ipc.new_stream(path, table.schema) as w:
+        w.write_table(table)
+
+
+def read_angles(path: Path, steps: int) -> tuple[np.ndarray, np.ndarray]:
+    """The (sin, cos) [steps, NUM_TAGS, 2] and seen [steps, NUM_TAGS] of an
+    angles.arrows file written for a recording of `steps` steps."""
+    if not path.exists():
+        raise FileNotFoundError(f"{path}: no calibrated angles; run common.calibrate")
+    with ipc.open_stream(path) as reader:
+        table = reader.read_all()
+    if len(table) != steps:
+        raise ValueError(f"{path}: {len(table)} steps, the recording {steps}; calibrate it again")
+    angles = np.stack([table[f"link{i}"].to_numpy(zero_copy_only=False) for i in range(NUM_TAGS)], -1)
+    present = ~np.isnan(angles)
+    angles = np.nan_to_num(angles)
+    obs = np.stack([np.sin(angles), np.cos(angles)], -1).astype(np.float32) * present[..., None]
+    return obs, present
+
+
+def angles_metadata(path: Path) -> dict[str, str]:
+    """The metadata an angles.arrows file was written with."""
+    with ipc.open_stream(path) as reader:
+        return {k.decode(): v.decode() for k, v in (reader.schema.metadata or {}).items()}
 
 
 @dataclass

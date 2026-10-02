@@ -13,7 +13,8 @@ ensemble metrics over --ensemble sampled rollouts per window
 position rather than --samples random ones; --upright keeps the windows
 starting with arms 0 and 1 upright, and skips a recording with fewer than
 64 of them. --csv writes every metric, one row per checkpoint and
-recording.
+recording. Each model sees the recordings as it was trained to: as tag
+yaws, or as calibrated link angles (common.calibrate).
 
 A flow model's checkpoint can be given as PATH@STEPS, to sample it in
 STEPS midpoint steps rather than its config's `flow_steps`; the same
@@ -73,8 +74,12 @@ def main():
         with open("world_model/configs/base.toml", "rb") as f:
             hanging = hanging_yaws(load_recordings(args.data_dir, tomllib.load(f)["train"])).to(device)
     width = max(len(n) for n in names.values())
+    observations = sorted({m.observation for m in models.values()})
     for rec in args.val:
-        windows = Windows(load_recordings(args.data_dir, [rec]), length, device)
+        # Each model sees the recording as it was trained to (yaw or
+        # calibrated angles); both have the same steps, so the same windows.
+        seen_as = {o: Windows(load_recordings(args.data_dir, [rec], o), length, device) for o in observations}
+        windows = seen_as.get("yaw", seen_as[observations[0]])
         if args.stride:
             index = torch.arange(0, len(windows), args.stride, device=device)
         else:
@@ -88,7 +93,7 @@ def main():
         print(" " * width + "".join(f"{f'h{h:03d}':>8s}" for h in HORIZONS) + f"{'bce':>8s}")
         for path, model in models.items():
             # A model with a shorter window sees the end of each longer one.
-            trimmed = _Trimmed(windows, window - model.window)
+            trimmed = _Trimmed(seen_as[model.observation], window - model.window)
             m = evaluate(model, trimmed, index, HORIZONS, args.ensemble, ensemble_stride=args.ensemble_stride)
             if model.stochastic:
                 m |= yaw_coverage(model, trimmed.gather(index[::args.ensemble_stride]), args.yaw_members)
