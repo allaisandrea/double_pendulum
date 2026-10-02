@@ -145,6 +145,33 @@ def yaw_gaussian_metrics(model: YawGaussianWorldModel, batch: Batch) -> dict:
             "within_1sd": (z < 1).float().mean().item(), "within_2sd": (z < 2).float().mean().item()}
 
 
+
+@torch.no_grad()
+def yaw_coverage(model, batch: Batch, members: int, seed: int = 0) -> dict:
+    """Any stochastic model's one-step forecast of the yaw changes, from
+    `members` draws (tau 1) per window, over the tags seen in the next frame
+    that have a reference; it needs no density, so it compares models of
+    every kind. `yaw/within_68`, `yaw/within_95`: the share of actual
+    changes inside the draws' central 68% and 95% intervals (0.68 and 0.95
+    if calibrated); `yaw/crps`: the draws' CRPS over copying the last frame's
+    (its mean absolute change)."""
+    w = model.window
+    obs, present, action = batch.obs[:, :w], batch.present[:, :w], batch.action[:, :w]
+    g = torch.Generator().manual_seed(seed)
+    rep = lambda t: t.repeat_interleave(members, 0)
+    nxt, _, ref, has_ref = model.predict(rep(obs), rep(present), rep(action), 1.0, g)
+    draws = yaw_change(ref, F.normalize(nxt, dim=-1)).reshape(len(obs), members, NUM_TAGS)
+    ref, has_ref = last_seen(obs, present)
+    mask = batch.present[:, w] & has_ref
+    y = yaw_change(ref, batch.obs[:, w])[mask]  # [N]
+    x = draws.permute(0, 2, 1)[mask]  # [N, members]
+    q = torch.quantile(x, torch.tensor([0.025, 0.16, 0.84, 0.975], device=x.device), dim=1)
+    crps = (x - y[:, None]).abs().mean(1) - 0.5 * (x[:, :, None] - x[:, None]).abs().mean((1, 2))
+    return {"yaw/within_68": ((y > q[1]) & (y < q[2])).float().mean().item(),
+            "yaw/within_95": ((y > q[0]) & (y < q[3])).float().mean().item(),
+            "yaw/crps": (crps.mean() / y.abs().mean()).item()}
+
+
 @torch.no_grad()
 def evaluate(model: WorldModel | FlowWorldModel, windows: Windows, index, horizons: list[int], members: int = 0,
              nll_steps: int = 32, ensemble_stride: int = 1) -> dict:

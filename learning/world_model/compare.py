@@ -14,6 +14,13 @@ position rather than --samples random ones; --upright keeps the windows
 starting with arms 0 and 1 upright, and skips a recording with fewer than
 64 of them. --csv writes every metric, one row per checkpoint and
 recording.
+
+A flow model's checkpoint can be given as PATH@STEPS, to sample it in
+STEPS midpoint steps rather than its config's `flow_steps`; the same
+checkpoint may appear at several. Every stochastic model is also scored on
+its one-step forecast of the yaw changes, from --yaw-members draws per
+window (evaluation_lib.yaw_coverage), which compares models of every
+kind; --ensemble-stride scores the ensembles on every Nth window only.
 """
 import argparse
 import csv
@@ -24,7 +31,7 @@ import torch
 
 from common.data_lib import Windows, hanging_yaws, load_recordings
 from common.run_lib import pick_device
-from world_model.evaluation_lib import evaluate
+from world_model.evaluation_lib import evaluate, yaw_coverage
 from world_model.model_lib import load_world_model
 from world_model.train import MIN_UPRIGHT, upright_subset
 
@@ -33,7 +40,7 @@ HORIZONS = [1, 4, 16, 64, 125]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("checkpoints", type=Path, nargs="+")
+    parser.add_argument("checkpoints", nargs="+", help="PATH, or PATH@STEPS for a flow model")
     parser.add_argument("--val", nargs="+", required=True, help="recordings, each its own set")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--samples", type=int, default=4096)
@@ -41,16 +48,26 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ensemble", type=int, default=8, help="sampled rollouts per window, stochastic models")
     parser.add_argument("--upright", action="store_true", help="only the windows starting with arms 0 and 1 upright")
+    parser.add_argument("--ensemble-stride", type=int, default=1, help="the ensembles on every Nth window only")
+    parser.add_argument("--yaw-members", type=int, default=64, help="draws per window for the yaw forecast")
     parser.add_argument("--csv", type=Path)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
     rows = []
     device = pick_device(args.device)
 
-    models = {p: load_world_model(p, device) for p in args.checkpoints}
+    models, names = {}, {}
+    for spec in map(str, args.checkpoints):
+        path, at, steps = spec.rpartition("@")
+        if not at:
+            path, steps = spec, None
+        model = load_world_model(Path(path), device)
+        if steps:
+            model.flow_steps = int(steps)
+        models[spec] = model
+        names[spec] = Path(path).parent.name + (f"@{steps}" if steps else "")
     window = max(m.window for m in models.values())
     length = window + max(HORIZONS)
-    names = {p: p.parent.name for p in args.checkpoints}
     if args.upright:
         # The hanging yaws, from the recordings the world models trained on.
         with open("world_model/configs/base.toml", "rb") as f:
@@ -71,13 +88,20 @@ def main():
         print(" " * width + "".join(f"{f'h{h:03d}':>8s}" for h in HORIZONS) + f"{'bce':>8s}")
         for path, model in models.items():
             # A model with a shorter window sees the end of each longer one.
-            m = evaluate(model, _Trimmed(windows, window - model.window), index, HORIZONS, args.ensemble)
+            trimmed = _Trimmed(windows, window - model.window)
+            m = evaluate(model, trimmed, index, HORIZONS, args.ensemble, ensemble_stride=args.ensemble_stride)
+            if model.stochastic:
+                m |= yaw_coverage(model, trimmed.gather(index[::args.ensemble_stride]), args.yaw_members)
             row = [m[f"one_minus_r2/h{h:03d}"] for h in HORIZONS] + [m["bce"]]
             print(f"{names[path]:{width}s}" + "".join(f"{v:8.4f}" for v in row))
             for key in ("ensemble/one_minus_r2", "ensemble/crps", "ensemble/spread_skill"):
                 if f"{key}/h001" in m:
                     label = f"  {key.split('/')[1]}"
                     print(f"{label:{width}s}" + "".join(f"{m[f'{key}/h{h:03d}']:8.4f}" for h in HORIZONS))
+            if model.stochastic:
+                print(f"{'  yaw one step':{width}s}" + "".join(f"  {k.split('/')[1]} {m[k]:.3f}" for k in
+                      ("yaw/within_68", "yaw/within_95", "yaw/crps"))
+                      + (f"  nll {m['nll']:.3f} median {m['median_nll']:.3f}" if "fm" in m or "fit" in m else ""))
             rows.append({"checkpoint": names[path], "recording": rec, **m})
     if args.csv:
         keys = list(dict.fromkeys(k for r in rows for k in r))
